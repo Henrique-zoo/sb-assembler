@@ -11,8 +11,10 @@
 
 use crate::{
     errors::{
-        InvalidParamKind, LexerError, LexerErrorKind, MacroHeaderErrorKind, PreprocessorError,
-        PreprocessorErrorKind,
+        DirectiveKind, DirectiveSyntaxErrorKind, EquDirectiveErrorKind, IfDirectiveErrorKind,
+        InvalidArgKind, InvalidParamKind, LexerError, LexerErrorKind, MacroCallErrorKind,
+        MacroHeaderErrorKind, PreprocessorError, PreprocessorErrorKind,
+        SectionDeclarationErrorKind,
     },
     interner::Interner,
     lexer::Lexer,
@@ -91,8 +93,7 @@ impl<'a> Assembler<'a> {
             | PreprocessorErrorKind::UnterminatedMacro
             | PreprocessorErrorKind::InvalidDirective => {}
 
-            PreprocessorErrorKind::MacroAlreadyDefined(sym)
-            | PreprocessorErrorKind::MacroNotDefined(sym) => {
+            PreprocessorErrorKind::MacroAlreadyDefined(sym) => {
                 let _ = *sym;
             }
 
@@ -100,15 +101,88 @@ impl<'a> Assembler<'a> {
                 let _ = (*expected, *found);
             }
 
+            PreprocessorErrorKind::InvalidDirectiveSyntax(kind) => match kind {
+                DirectiveSyntaxErrorKind::TrailingTokens { directive } => match directive {
+                    DirectiveKind::MacroHeader
+                    | DirectiveKind::EndMacro
+                    | DirectiveKind::Equ
+                    | DirectiveKind::If
+                    | DirectiveKind::Section
+                    | DirectiveKind::MacroCall => {}
+                },
+                DirectiveSyntaxErrorKind::MissingToken {
+                    directive,
+                    token_missed,
+                } => {
+                    let _ = *token_missed;
+                    match directive {
+                        DirectiveKind::MacroHeader
+                        | DirectiveKind::EndMacro
+                        | DirectiveKind::Equ
+                        | DirectiveKind::If
+                        | DirectiveKind::Section
+                        | DirectiveKind::MacroCall => {}
+                    }
+                }
+                DirectiveSyntaxErrorKind::InvalidDeclaration { directive } => match directive {
+                    DirectiveKind::MacroHeader
+                    | DirectiveKind::EndMacro
+                    | DirectiveKind::Equ
+                    | DirectiveKind::If
+                    | DirectiveKind::Section
+                    | DirectiveKind::MacroCall => {}
+                },
+                DirectiveSyntaxErrorKind::UnexpectedToken {
+                    directive,
+                    expected_token,
+                } => {
+                    let _ = *expected_token;
+                    match directive {
+                        DirectiveKind::MacroHeader
+                        | DirectiveKind::EndMacro
+                        | DirectiveKind::Equ
+                        | DirectiveKind::If
+                        | DirectiveKind::Section
+                        | DirectiveKind::MacroCall => {}
+                    }
+                }
+                DirectiveSyntaxErrorKind::ForbiddenToken { directive } => match directive {
+                    DirectiveKind::MacroHeader
+                    | DirectiveKind::EndMacro
+                    | DirectiveKind::Equ
+                    | DirectiveKind::If
+                    | DirectiveKind::Section
+                    | DirectiveKind::MacroCall => {}
+                },
+            },
+
+            PreprocessorErrorKind::InvalidSectionDeclaration(kind) => match kind {
+                SectionDeclarationErrorKind::MissingSectionKeyword => {}
+            },
+
             PreprocessorErrorKind::InvalidMacroHeader(kind) => match kind {
-                MacroHeaderErrorKind::MissingColon
-                | MacroHeaderErrorKind::TrailingTokens
-                | MacroHeaderErrorKind::InvalidLabel => {}
+                MacroHeaderErrorKind::MissingColon | MacroHeaderErrorKind::InvalidLabel => {}
                 MacroHeaderErrorKind::InvalidParam(param_kind) => match param_kind {
                     InvalidParamKind::InvalidParamIdent
                     | InvalidParamKind::NoAmpersand
                     | InvalidParamKind::UnexpectedComma => {}
                 },
+            },
+
+            PreprocessorErrorKind::InvalidMacroCall(kind) => match kind {
+                MacroCallErrorKind::UndefinedMacro | MacroCallErrorKind::MissingArguments => {}
+                MacroCallErrorKind::InvalidArg(arg_kind) => match arg_kind {
+                    InvalidArgKind::InvalidArgIdent | InvalidArgKind::UnexpectedComma => {}
+                },
+            },
+
+            PreprocessorErrorKind::InvalidIfDirective(kind) => match kind {
+                IfDirectiveErrorKind::MissingCondition
+                | IfDirectiveErrorKind::InvalidConditionType => {}
+            },
+
+            PreprocessorErrorKind::InvalidEquDirective(kind) => match kind {
+                EquDirectiveErrorKind::InvalidValueType => {}
             },
         }
 

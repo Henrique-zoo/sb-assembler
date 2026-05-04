@@ -6,10 +6,7 @@ impl Preprocessor {
     ///
     /// Esta detecção é heurística/permissiva: o objetivo é encaminhar a linha
     /// para parsing e permitir erro específico quando houver tentativa inválida.
-    pub(in crate::preprocessor) fn looks_like_macro_body_terminator(
-        &self,
-        line: &[Token],
-    ) -> bool {
+    pub(in crate::preprocessor) fn looks_like_macro_body_terminator(&self, line: &[Token]) -> bool {
         let _ = line;
         todo!()
     }
@@ -18,10 +15,7 @@ impl Preprocessor {
     ///
     /// Em geral, toda linha não vazia dentro de `State::DefiningMacro` é
     /// candidata a body, salvo quando detectada como terminador.
-    pub(in crate::preprocessor) fn looks_like_macro_body_content(
-        &self,
-        line: &[Token],
-    ) -> bool {
+    pub(in crate::preprocessor) fn looks_like_macro_body_content(&self, line: &[Token]) -> bool {
         let _ = line;
         todo!()
     }

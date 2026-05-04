@@ -377,6 +377,90 @@ fn emits_eof_after_trailing_horizontal_whitespace() {
 }
 
 #[test]
+fn supports_line_break_after_label_colon() {
+    let source = "ROT:\nADD\n";
+    let (tokens, mut interner) = lex_ok(source);
+
+    let rot = interner.entry("ROT").or_insert();
+    let add = interner.entry("ADD").or_insert();
+    let actual_kinds: Vec<_> = tokens.into_iter().map(|token| token.kind).collect();
+
+    assert_eq!(
+        actual_kinds,
+        vec![
+            TokenKind::Ident(rot),
+            TokenKind::Colon,
+            TokenKind::Ident(add),
+            TokenKind::NewLine,
+            TokenKind::Eof,
+        ]
+    );
+}
+
+#[test]
+fn supports_line_break_after_label_with_extra_horizontal_whitespace() {
+    let source = "ROT:   \n \tADD\n";
+    let (tokens, mut interner) = lex_ok(source);
+
+    let rot = interner.entry("ROT").or_insert();
+    let add = interner.entry("ADD").or_insert();
+    let actual_kinds: Vec<_> = tokens.into_iter().map(|token| token.kind).collect();
+
+    assert_eq!(
+        actual_kinds,
+        vec![
+            TokenKind::Ident(rot),
+            TokenKind::Colon,
+            TokenKind::Ident(add),
+            TokenKind::NewLine,
+            TokenKind::Eof,
+        ]
+    );
+}
+
+#[test]
+fn supports_line_break_after_label_with_comment_after_colon() {
+    let source = "ROT: ; comentário\nADD\n";
+    let (tokens, mut interner) = lex_ok(source);
+
+    let rot = interner.entry("ROT").or_insert();
+    let add = interner.entry("ADD").or_insert();
+    let actual_kinds: Vec<_> = tokens.into_iter().map(|token| token.kind).collect();
+
+    assert_eq!(
+        actual_kinds,
+        vec![
+            TokenKind::Ident(rot),
+            TokenKind::Colon,
+            TokenKind::Ident(add),
+            TokenKind::NewLine,
+            TokenKind::Eof,
+        ]
+    );
+}
+
+#[test]
+fn supports_line_break_after_label_with_blank_and_comment_lines() {
+    let source = "ROT:\n\n; comentário intermediário\n   \nADD\n";
+    let (tokens, mut interner) = lex_ok(source);
+
+    let rot = interner.entry("ROT").or_insert();
+    let add = interner.entry("ADD").or_insert();
+    let actual_kinds: Vec<_> = tokens.into_iter().map(|token| token.kind).collect();
+
+    assert_eq!(
+        actual_kinds,
+        vec![
+            TokenKind::Ident(rot),
+            TokenKind::Colon,
+            TokenKind::Ident(add),
+            TokenKind::NewLine,
+            TokenKind::Eof,
+        ]
+    );
+}
+
+#[test]
 fn reports_invalid_unicode_character() {
     let error = lex_err("á");
 

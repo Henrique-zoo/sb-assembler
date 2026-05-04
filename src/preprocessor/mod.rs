@@ -4,38 +4,44 @@
 //! 1. triagem com detectores (`detection::looks_like_*`);
 //! 2. validação sintática/extração (`parser::*`);
 //! 3. aplicação de efeitos (`execute::*`: registro de macro/EQU, expansão, controle de
-//!    fluxo, ORG) e acumulação de erros.
+//!    fluxo) e acumulação de erros.
 //!
 //! Separação de responsabilidades:
 //! - [`crate::preprocessor::detection`]: reconhecimento permissivo de tentativa
 //!   de diretiva;
-//! - [`crate::preprocessor::parser`]: validação sintática estrita e parsing
-//!   (ex.: `ORG` aceita `Number` ou `Ident`);
+//! - [`crate::preprocessor::parser`]: validação sintática estrita e parsing;
 //! - [`crate::preprocessor::execute`]: execução semântica das diretivas;
-//! - este módulo: despacho por estado e montagem do output.
+//! - este módulo: despacho por linha e montagem do output.
 
 mod detection;
 mod execute;
+mod ir;
 mod parser;
 mod types;
 
-pub(crate) use types::{Keywords, Macro, Preprocessor, State};
+pub(crate) use types::{Keywords, Preprocessor};
 
-use std::collections::HashMap;
+use std::{collections::HashMap, iter::Peekable, vec::IntoIter};
 
 use crate::{
-    errors::{PreprocessorError, PreprocessorErrorKind},
+    errors::PreprocessorError,
     interner::Interner,
     lexer::{Token, TokenKind},
+    preprocessor::types::{FixedSymbols, LogicalLine, Section},
 };
-use types::PreprocessorAcc;
+
+/// Efeitos produzidos pelo processamento de uma única linha lógica.
+struct LineProcessResult {
+    output: Vec<Token>,
+    errors: Vec<PreprocessorError>,
+}
 
 impl Preprocessor {
     /// Cria uma instância de `Preprocessor` pronta para uso.
     ///
-    /// A construção inicializa o estado interno como `State::Normal`, cria
-    /// tabelas vazias para macros e `EQU`, e interna as keywords do
-    /// pré-processador para comparações eficientes por símbolo.
+    /// A construção inicializa a seção atual como `Section::None`, cria tabelas
+    /// vazias para macros e `EQU`, e interna as keywords do pré-processador
+    /// para comparações eficientes por símbolo.
     ///
     /// # Exemplo
     /// ```rust,ignore
@@ -44,34 +50,42 @@ impl Preprocessor {
     /// ```
     pub fn new(interner: &mut Interner) -> Self {
         let keywords = Keywords {
+            section_kw: interner.entry("SECTION").or_insert(),
+            text_kw: interner.entry("TEXT").or_insert(),
+            data_kw: interner.entry("DATA").or_insert(),
             macro_kw: interner.entry("MACRO").or_insert(),
             endmacro_kw: interner.entry("ENDMACRO").or_insert(),
             equ_kw: interner.entry("EQU").or_insert(),
             if_kw: interner.entry("IF").or_insert(),
-            org_kw: interner.entry("ORG").or_insert(),
+        };
+
+        let fixed_symbols = FixedSymbols {
+            ampersand: interner.entry("&").or_insert(),
+            comma: interner.entry(",").or_insert(),
+            colon: interner.entry(":").or_insert(),
+            plus: interner.entry("+").or_insert(),
+            minus: interner.entry("-").or_insert(),
         };
 
         Self {
             macros: HashMap::new(),
             equs: HashMap::new(),
-            state: State::Normal,
+            current_section: Section::None,
             keywords,
+            fixed_symbols,
         }
     }
 
     /// Executa o pré-processamento sobre o fluxo de tokens produzido pelo lexer.
     ///
-    /// A função percorre os tokens, agrupa o conteúdo por linhas lógicas e
-    /// delega cada linha para `process_line`. Os separadores originais
-    /// (`NewLine` e `Eof`) são preservados no resultado.
+    /// A função agrupa os tokens em linhas lógicas e delega cada linha para
+    /// `process_line`. Os separadores originais (`NewLine` e `Eof`) são
+    /// preservados no resultado.
     ///
     /// O processamento não interrompe no primeiro problema: erros são
     /// acumulados e devolvidos juntos no final. Durante esse fluxo, o
     /// pré-processador pode alterar estado, registrar diretivas e expandir
     /// macros.
-    ///
-    /// Ao término, é feita uma verificação final para detectar macro aberta
-    /// sem `ENDMACRO`, gerando `UnterminatedMacro` quando aplicável.
     ///
     /// Retorna `Ok(output)` quando nenhum erro foi acumulado e `Err(errors)`
     /// quando há um ou mais diagnósticos.
@@ -96,46 +110,14 @@ impl Preprocessor {
         tokens: Vec<Token>,
         interner: &mut Interner,
     ) -> Result<Vec<Token>, Vec<PreprocessorError>> {
-        let PreprocessorAcc {
-            output,
-            current_line: _,
-            mut errors,
-        } = tokens
-            .into_iter()
-            .fold(PreprocessorAcc::new(), |mut acc, token| {
-                if matches!(token.kind, TokenKind::NewLine | TokenKind::Eof) {
-                    self.process_line(
-                        &acc.current_line,
-                        &mut acc.output,
-                        &mut acc.errors,
-                        interner,
-                    );
+        let mut output = Vec::new();
+        let mut errors = Vec::new();
+        let mut lines = Self::collect_logical_lines(tokens).into_iter().peekable();
 
-                    acc.output.push(token);
-                } else {
-                    acc.current_line.push(token);
-                }
-
-                acc
-            });
-
-        // Todos os tokens já foram processados, logo, se o estado aqui é DefiningMacro, algum macro não foi fechado
-        if let State::DefiningMacro { body, .. } = &self.state {
-            let span = body
-                .last()
-                .and_then(|line| line.first())
-                .map(|t| t.span)
-                .unwrap_or(crate::lexer::Span {
-                    pos: 0,
-                    line: 1,
-                    column: 1,
-                    len: 0,
-                });
-
-            errors.push(PreprocessorError {
-                kind: PreprocessorErrorKind::UnterminatedMacro,
-                span,
-            });
+        while let Some(logical_line) = lines.next() {
+            let line_result = self.process_line(logical_line, &mut lines, interner);
+            output.extend(line_result.output);
+            errors.extend(line_result.errors);
         }
 
         if errors.is_empty() {
@@ -145,89 +127,144 @@ impl Preprocessor {
         }
     }
 
-    /// Processa uma linha lógica (sem `NewLine`/`Eof`) de acordo com o estado
-    /// atual do pré-processador.
+    /// Processa uma linha lógica (sem `NewLine`/`Eof`).
     ///
-    /// Em `State::Normal`, a função usa os detectores `looks_like_*` como
-    /// triagem
-    /// rápida e delega a validação/aplicação da diretiva para as rotinas
-    /// correspondentes. Se a linha não representar diretiva nem expansão de
-    /// macro, ela é repassada para `output` sem alterações.
+    /// A função usa os detectores `looks_like_*` como triagem rápida e delega a
+    /// validação/aplicação da diretiva para as rotinas correspondentes.
     ///
-    /// Em `State::DefiningMacro`, as linhas são acumuladas no corpo da macro
-    /// até que um fechamento seja encontrado.
+    /// Para definição de macro, `execute_macro_header` recebe o iterador de
+    /// linhas e consome o bloco até `ENDMACRO`.
     ///
-    /// Essa função pode alterar estado interno, atualizar tabelas, escrever em
-    /// `output` e acumular erros em `errors`. Linhas vazias retornam cedo.
+    /// Essa função pode atualizar tabelas internas e retorna os efeitos
+    /// produzidos naquela linha (`output` emitido + erros acumulados).
     ///
     /// # Exemplo (uso interno)
     /// ```rust,ignore
-    /// let mut output = Vec::new();
-    /// let mut errors = Vec::new();
-    /// preprocessor.process_line(&line, &mut output, &mut errors, &mut interner);
+    /// let mut lines = Vec::new().into_iter().peekable();
+    /// let result = preprocessor.process_line(line, &mut lines, &mut interner);
+    /// assert!(result.errors.is_empty());
     /// ```
     fn process_line(
         &mut self,
-        line: &[Token],
-        output: &mut Vec<Token>,
-        errors: &mut Vec<PreprocessorError>,
+        logical_line: LogicalLine,
+        lines: &mut Peekable<IntoIter<LogicalLine>>,
         interner: &mut Interner,
-    ) {
+    ) -> LineProcessResult {
+        let mut output = Vec::new();
+        let mut errors = Vec::new();
+        let line = logical_line.content.as_slice();
+        let terminator = logical_line.terminator;
+
         if line.is_empty() {
-            return;
+            output.push(terminator);
+            return LineProcessResult { output, errors };
         }
-        let is_endmacro_line = self.looks_like_endmacro_line(line);
 
-        match &mut self.state {
-            State::Normal => {
-                if self.looks_like_macro_header(line) {
-                    match self.parse_macro_header(line) {
-                        Ok(_) => self.execute_macro_header(),
-                        Err(e) => errors.push(e),
-                    }
-                    return;
-                }
+        if self.looks_like_macro_header(line) {
+            output.push(terminator);
 
-                if self.looks_like_equ_line(line) {
-                    if let Err(err) = self.process_equ(line) {
-                        errors.push(err);
-                    }
-                    return;
-                }
+            let Some(macro_header) = self
+                .parse_macro_header(line)
+                .map_err(|err| errors.push(err))
+                .ok()
+            else {
+                return LineProcessResult { output, errors };
+            };
 
-                if self.looks_like_if_line(line) {
-                    if let Err(err) = self.process_if(line, output) {
-                        errors.push(err);
-                    }
-                    return;
-                }
-
-                if self.looks_like_org_line(line) {
-                    if let Err(err) = self.process_org(line) {
-                        errors.push(err);
-                    }
-                    return;
-                }
-
-                if let Some(expanded) = self.expand_macro_call(line, interner, errors) {
-                    for expanded_line in expanded {
-                        output.extend(expanded_line);
-                    }
-                    return;
-                }
-
-                output.extend_from_slice(line);
+            if let Err(err) = self.execute_macro_header(macro_header, lines, &mut output) {
+                errors.push(err);
             }
+            return LineProcessResult { output, errors };
+        }
 
-            State::DefiningMacro { body, .. } => {
-                if is_endmacro_line {
-                    if let Err(err) = self.finish_macro_definition() {
-                        errors.push(err);
-                    }
-                } else {
-                    body.push(line.to_vec());
+        if self.looks_like_equ_line(line) {
+            if let Err(err) = self.process_equ(line) {
+                errors.push(err);
+            }
+            output.push(terminator);
+            return LineProcessResult { output, errors };
+        }
+
+        if self.looks_like_if_line(line) {
+            if let Err(err) = self.process_if(line, &mut output) {
+                errors.push(err);
+            }
+            output.push(terminator);
+            return LineProcessResult { output, errors };
+        }
+
+        if self.looks_like_text_line(line) {
+            match self.parse_text_line(line) {
+                Ok(section_decl) => {
+                    self.current_section = section_decl.section;
+                }
+                Err(err) => {
+                    errors.push(err);
                 }
             }
+            output.push(terminator);
+            return LineProcessResult { output, errors };
         }
+
+        if self.looks_like_data_line(line) {
+            match self.parse_data_line(line) {
+                Ok(section_decl) => {
+                    self.current_section = section_decl.section;
+                }
+                Err(err) => {
+                    errors.push(err);
+                }
+            }
+            output.push(terminator);
+            return LineProcessResult { output, errors };
+        }
+
+        if let Some(expanded) = self.expand_macro_call(line, interner, &mut errors) {
+            for expanded_line in expanded {
+                output.extend(expanded_line);
+            }
+            output.push(terminator);
+            return LineProcessResult { output, errors };
+        }
+
+        output.extend_from_slice(line);
+        output.push(terminator);
+        LineProcessResult { output, errors }
+    }
+
+    /// Agrupa o fluxo linear de tokens em [`LogicalLine`]s.
+    ///
+    /// Cada linha lógica é finalizada quando encontra `NewLine` ou `Eof`.
+    /// Nesse ponto:
+    /// - `content` recebe os tokens acumulados antes do terminador;
+    /// - `terminator` guarda o separador original da linha.
+    ///
+    /// Preservar o `terminator` permite que as próximas etapas processem por
+    /// linha sem perder a estrutura original do fonte (linhas vazias,
+    /// quebras e fim de arquivo continuam explícitos no pipeline).
+    ///
+    /// Contrato esperado:
+    /// - o lexer deve emitir `Eof`;
+    /// - a função não valida sintaxe, apenas reorganiza tokens por linha.
+    ///
+    /// Nota:
+    /// - se a entrada não contiver `NewLine`/`Eof` ao final, os tokens
+    ///   remanescentes não são emitidos como linha lógica.
+    fn collect_logical_lines(tokens: Vec<Token>) -> Vec<LogicalLine> {
+        let mut lines = Vec::new();
+        let mut current_line = Vec::new();
+
+        for token in tokens {
+            if matches!(&token.kind, TokenKind::NewLine | TokenKind::Eof) {
+                lines.push(LogicalLine {
+                    content: std::mem::take(&mut current_line),
+                    terminator: token,
+                });
+            } else {
+                current_line.push(token);
+            }
+        }
+
+        lines
     }
 }

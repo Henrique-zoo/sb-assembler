@@ -2,7 +2,8 @@
 //!
 //! Este módulo reúne detectores `looks_like_*` cuja responsabilidade é
 //! **triagem**: responder se uma linha *parece* uma tentativa de uso de
-//! diretiva (`MACRO`, `ENDMACRO`, `EQU`, `IF`, `ORG`), sem exigir sintaxe
+//! diretiva (`MACRO`, `ENDMACRO`, `EQU`, `IF`, `SECTION TEXT`,
+//! `SECTION DATA`), sem exigir sintaxe
 //! estrita.
 //!
 //! ## Objetivo principal
@@ -53,7 +54,7 @@
 //! - `macro_detection`: `MACRO` e `ENDMACRO`;
 //! - `equ_detection`: `EQU`;
 //! - `if_detection`: `IF`.
-//! - `org_detection`: `ORG`.
+//! - `section_detection`: `SECTION TEXT` e `SECTION DATA`.
 //!
 //! Além disso, este módulo separa fluxos específicos de macro:
 //! - `macro_body_detection`: tentativas relacionadas ao corpo da macro
@@ -65,4 +66,4 @@ mod if_detection;
 mod macro_body_detection;
 mod macro_call_detection;
 mod macro_detection;
-mod org_detection;
+mod section_detection;

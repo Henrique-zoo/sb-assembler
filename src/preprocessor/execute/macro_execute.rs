@@ -1,21 +1,61 @@
+use std::{iter::Peekable, vec::IntoIter};
+
 use crate::{
-    errors::PreprocessorError,
+    errors::{PreprocessorError, PreprocessorErrorKind},
     interner::Interner,
     lexer::Token,
-    preprocessor::Preprocessor,
+    preprocessor::{
+        Preprocessor,
+        ir::{Macro, MacroHeader},
+        types::LogicalLine,
+    },
 };
 
 impl Preprocessor {
-    /// Aplica os efeitos de um cabeçalho de macro já validado pelo parser.
-    pub(in crate::preprocessor) fn execute_macro_header(&mut self) {
-        todo!()
-    }
-
-    /// Finaliza a definição de macro corrente e atualiza o estado/tabela.
-    pub(in crate::preprocessor) fn finish_macro_definition(
+    /// Aplica os efeitos semânticos de um cabeçalho `MACRO` já parseado.
+    ///
+    /// A função recebe o iterador de linhas lógicas e consome o bloco da macro
+    /// até encontrar uma linha candidata a `ENDMACRO`.
+    ///
+    /// Durante o consumo:
+    /// - linhas intermediárias são acumuladas no body da macro;
+    /// - os terminadores das linhas consumidas são preservados em `output`.
+    pub(in crate::preprocessor) fn execute_macro_header(
         &mut self,
+        macro_header: MacroHeader,
+        lines: &mut Peekable<IntoIter<LogicalLine>>,
+        output: &mut Vec<Token>,
     ) -> Result<(), PreprocessorError> {
-        todo!()
+        let mut body = Vec::new();
+        let mut unterminated_span = macro_header.span;
+
+        while let Some(logical_line) = lines.next() {
+            if self.looks_like_endmacro_line(&logical_line.content) {
+                output.push(logical_line.terminator);
+                self.parse_endmacro_line(&logical_line.content)?;
+
+                self.macros.insert(
+                    macro_header.name,
+                    Macro {
+                        header: macro_header,
+                        body,
+                    },
+                );
+                return Ok(());
+            }
+
+            if !logical_line.content.is_empty() {
+                unterminated_span = logical_line.content[0].span;
+                body.push(logical_line.content);
+            }
+
+            output.push(logical_line.terminator);
+        }
+
+        Err(PreprocessorError {
+            kind: PreprocessorErrorKind::UnterminatedMacro,
+            span: unterminated_span,
+        })
     }
 
     /// Tenta expandir uma chamada de macro em uma ou mais linhas de tokens.

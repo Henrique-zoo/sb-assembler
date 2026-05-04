@@ -169,16 +169,56 @@ impl<'src, 'interner> Lexer<'src, 'interner> {
         Some((start_offset, ch))
     }
 
-    /// Consome whitespace horizontal (`' '`, `'\t'`, `'\r'`), sem tocar em `\n`.
+    /// Consome *whitespace* horizontal (`' '`, `'\t'`, `'\r'`), sem tocar em `\n`.
     ///
     /// Efeito no estado:
     /// - Repetidamente chama `bump()`, então avança `offset/column`
     ///   (e eventualmente linha/coluna no caso de `\r` não muda linha).
-    /// - Para assim que encontra algo que não seja whitespace horizontal
+    /// - Para assim que encontra algo que não seja *whitespace* horizontal
     ///   ou quando chega em EOF.
     fn skip_horizontal_whitespace(&mut self) {
         while matches!(self.peek(), Some(' ' | '\t' | '\r')) {
             let _ = self.bump();
+        }
+    }
+
+    /// Consome *whitespace* vertical (`'\n'`)
+    ///
+    /// Efeito no estado:
+    /// - Repetidamente chama `bump()`, então avança `line` e reinicia `offset`
+    /// - Para assim que encontra algo que não seja *whitespace* vertical
+    ///   ou quando chega em EOF.
+    fn skip_vertical_whitespace(&mut self) {
+        while matches!(self.peek(), Some('\n')) {
+            let _ = self.bump();
+        }
+    }
+
+    /// Consome qualquer *whitespace* ASCII (`' '`, `'\t'`, `'\r'`, `'\n'`).
+    ///
+    /// Estratégia:
+    /// - enquanto o caractere atual for whitespace:
+    ///   - usa [`Self::skip_vertical_whitespace`] quando for `'\n'`;
+    ///   - caso contrário, usa [`Self::skip_horizontal_whitespace`].
+    ///
+    /// Efeito no estado:
+    /// - avança `offset/line/column` conforme os caracteres consumidos;
+    /// - para no primeiro caractere não-whitespace ou em EOF.
+    ///
+    /// Segurança em EOF:
+    /// - a condição do loop usa `peek().unwrap_or_default()`, então não há
+    ///   `panic` por `unwrap()` em fim de entrada.
+    ///
+    /// Observação:
+    /// - esta função apenas avança o cursor; não emite tokens.
+    fn skip_whitespace(&mut self) {
+        while let Some(ch) = self.peek()
+            && ch.is_ascii_whitespace()
+        {
+            match ch {
+                '\n' => self.skip_vertical_whitespace(),
+                _ => self.skip_horizontal_whitespace(),
+            }
         }
     }
 
@@ -195,6 +235,29 @@ impl<'src, 'interner> Lexer<'src, 'interner> {
                 break;
             }
             let _ = self.bump();
+        }
+    }
+
+    /// Consome uma sequência de *trivia*: comentários (`;...`) e whitespace.
+    ///
+    /// Esta rotina repete o consumo enquanto o próximo caractere for:
+    /// - `;` (comentário de linha, via [`Self::skip_comment`]);
+    /// - whitespace ASCII (via [`Self::skip_whitespace`]).
+    ///
+    /// Efeito no estado:
+    /// - avança `cursor` até o primeiro caractere "significativo" (não-trivia)
+    ///   ou até EOF.
+    ///
+    /// Observação:
+    /// - a função não produz tokens; apenas reposiciona o cursor.
+    fn skip_trivia(&mut self) {
+        while let Some(ch) = self.peek()
+            && (ch.is_ascii_whitespace() || ch == ';')
+        {
+            match ch {
+                ';' => self.skip_comment(),
+                _ => self.skip_whitespace(),
+            }
         }
     }
 
@@ -395,10 +458,18 @@ impl<'src, 'intern> Iterator for Lexer<'src, 'intern> {
                     self.skip_comment();
                     continue;
                 }
-                '\n' => Some(Ok(self.lex_newline())),
+                '\n' => {
+                    let token = self.lex_newline();
+                    self.skip_trivia();
+                    Some(Ok(token))
+                }
                 '&' => Some(Ok(self.lex_single_char(TokenKind::Ampersand))),
                 ',' => Some(Ok(self.lex_single_char(TokenKind::Comma))),
-                ':' => Some(Ok(self.lex_single_char(TokenKind::Colon))),
+                ':' => {
+                    let token = self.lex_single_char(TokenKind::Colon);
+                    self.skip_trivia();
+                    Some(Ok(token))
+                }
                 '+' => Some(Ok(self.lex_single_char(TokenKind::Plus))),
                 '-' => Some(Ok(self.lex_single_char(TokenKind::Minus))),
 

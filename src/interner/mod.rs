@@ -70,6 +70,32 @@ impl Interner {
             }
         }
     }
+
+    /// Consulta um símbolo já internado, sem inserir novas entradas.
+    ///
+    /// Parâmetros:
+    /// - `s`: texto a ser consultado no interner.
+    ///
+    /// Retorno:
+    /// - `Some(symbol)` quando `s` já está internada;
+    /// - `None` quando `s` ainda não existe no interner.
+    ///
+    /// Efeito colateral:
+    /// - nenhum. Diferente de [`Self::entry`], esta função não altera o
+    ///   estado interno e não cria símbolos novos.
+    ///
+    /// # Exemplo
+    /// ```rust,ignore
+    /// let mut interner = Interner::new();
+    ///
+    /// assert_eq!(interner.get("&"), None);
+    ///
+    /// let amp = interner.entry("&").or_insert();
+    /// assert_eq!(interner.get("&"), Some(amp));
+    /// ```
+    pub fn get(&self, s: &str) -> Option<Symbol> {
+        self.map.get(s).copied()
+    }
 }
 
 impl<'a> Entry<'a> {
