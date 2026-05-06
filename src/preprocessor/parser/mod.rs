@@ -25,14 +25,18 @@
 //! - `macro_call_parser`: sintaxe das chamadas de macro;
 //! - `equ_parser`: diretiva `EQU`;
 //! - `if_parser`: diretiva `IF`;
-//! - `section_parser`: diretivas de seção (`SECTION TEXT`/`SECTION DATA`).
+//! - `section_parser`: diretivas de seção (`SECTION TEXT`/`SECTION DATA`), que
+//!   validam troca de contexto e não geram linha de saída.
 //!
 //! Integração com IR:
 //! - os parsers retornam estruturas em [`crate::preprocessor::ir`], separando
 //!   validação sintática de execução semântica.
 
 use crate::{
-    errors::{DirectiveKind, DirectiveSyntaxErrorKind, PreprocessorError, PreprocessorErrorKind},
+    errors::{
+        DirectiveKind, DirectiveSyntaxErrorKind, ExpectedToken, PreprocessorError,
+        PreprocessorErrorKind,
+    },
     interner::Symbol,
     lexer::{Span, Token, TokenKind},
     preprocessor::{
@@ -109,9 +113,9 @@ impl Preprocessor {
     ///   - `kw_span` é o span da keyword consumida.
     ///
     /// Erros:
-    /// - `InvalidDirectiveSyntax(MissingToken { directive, token_missed })`
+    /// - `InvalidDirectiveSyntax(MissingToken { directive, expected })`
     ///   quando `line` está vazia;
-    /// - `InvalidDirectiveSyntax(UnexpectedToken { directive, expected_token })`
+    /// - `InvalidDirectiveSyntax(UnexpectedToken { directive, expected })`
     ///   quando o primeiro token não é `Ident(expected_keyword)`.
     ///
     /// Efeito colateral:
@@ -138,7 +142,7 @@ impl Preprocessor {
             Self::directive_sintatic_error(
                 DirectiveSyntaxErrorKind::MissingToken {
                     directive,
-                    token_missed: TokenKind::Ident(expected_keyword),
+                    expected: ExpectedToken::Keyword(expected_keyword),
                 },
                 fallback_span,
             )
@@ -150,7 +154,7 @@ impl Preprocessor {
             Err(Self::directive_sintatic_error(
                 DirectiveSyntaxErrorKind::UnexpectedToken {
                     directive,
-                    expected_token: TokenKind::Ident(expected_keyword),
+                    expected: ExpectedToken::Keyword(expected_keyword),
                 },
                 token.span,
             ))
@@ -179,9 +183,9 @@ impl Preprocessor {
     ///   - `token_span` é o span do token consumido.
     ///
     /// Erros:
-    /// - `InvalidDirectiveSyntax(MissingToken { directive, token_missed })`
+    /// - `InvalidDirectiveSyntax(MissingToken { directive, expected })`
     ///   quando `line` está vazia;
-    /// - `InvalidDirectiveSyntax(UnexpectedToken { directive, expected_token })`
+    /// - `InvalidDirectiveSyntax(UnexpectedToken { directive, expected })`
     ///   quando o primeiro token difere de `expected_token`.
     ///
     /// Efeito colateral:
@@ -208,7 +212,7 @@ impl Preprocessor {
             Self::directive_sintatic_error(
                 DirectiveSyntaxErrorKind::MissingToken {
                     directive,
-                    token_missed: expected_token,
+                    expected: ExpectedToken::from_token_kind(expected_token),
                 },
                 fallback_span,
             )
@@ -220,7 +224,7 @@ impl Preprocessor {
             Err(Self::directive_sintatic_error(
                 DirectiveSyntaxErrorKind::UnexpectedToken {
                     directive,
-                    expected_token: expected_token,
+                    expected: ExpectedToken::from_token_kind(expected_token),
                 },
                 token.span,
             ))

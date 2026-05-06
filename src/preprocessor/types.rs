@@ -10,7 +10,7 @@
 //! - manter o modelo interno do pré-processador em um único ponto;
 //! - facilitar evolução do pipeline sem espalhar tipos por submódulos.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, iter::Peekable, vec::IntoIter};
 
 use crate::{
     assembler::{SignedWord, Word},
@@ -42,63 +42,12 @@ pub(crate) struct Keywords {
     pub if_kw: Symbol,
 }
 
-/// Símbolos internados de tokens fixos de pontuação/operadores.
-///
-/// Esses símbolos são usados principalmente para diagnósticos sintáticos
-/// (`MissingToken`/`UnexpectedToken`) sem exigir internamento ad-hoc durante
-/// o parsing.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct FixedSymbols {
-    /// Símbolo de `,`.
-    pub comma: Symbol,
-    /// Símbolo de `:`.
-    pub colon: Symbol,
-    /// Símbolo de `&`.
-    pub ampersand: Symbol,
-    /// Símbolo de `+`.
-    pub plus: Symbol,
-    /// Símbolo de `-`.
-    pub minus: Symbol,
-    /// Símbolo do identificador genérico (para logs) `A`
-    pub generic_ident: Symbol,
-    /// Símbolo do número genérico (para logs) `10`
-    pub generic_number: Symbol,
-}
-
-impl TokenKind {
-    /// Converte `TokenKind` em símbolo usando o contexto de [`FixedSymbols`].
-    ///
-    /// Retorna:
-    /// - `Some(sym)` para `Ident`/`Number` e tokens fixos mapeados;
-    /// - `None` para variantes sem símbolo fixo (`NewLine`, `Eof`).
-    pub(crate) fn to_sym(&self, fixed_symbols: &FixedSymbols) -> Option<Symbol> {
-        match self {
-            TokenKind::Ident(sym) | TokenKind::Number(sym) => Some(*sym),
-            TokenKind::Ampersand => Some(fixed_symbols.ampersand),
-            TokenKind::Comma => Some(fixed_symbols.comma),
-            TokenKind::Colon => Some(fixed_symbols.colon),
-            TokenKind::Plus => Some(fixed_symbols.plus),
-            TokenKind::Minus => Some(fixed_symbols.minus),
-            TokenKind::NewLine | TokenKind::Eof => None,
-        }
-    }
-}
-
-impl Token {
-    /// Atalho para converter o token atual em símbolo.
-    ///
-    /// Delega para [`TokenKind::to_sym`] usando o `kind` do token.
-    pub(crate) fn to_sym(&self, fixed_symbols: &FixedSymbols) -> Option<Symbol> {
-        self.kind.to_sym(fixed_symbols)
-    }
-}
-
 /// Estrutura principal de estado do pré-processador.
 ///
 /// Mantém:
 /// - tabelas semânticas (macros e aliases `EQU`);
 /// - contexto de seção atual;
-/// - símbolos internados de keywords e tokens fixos.
+/// - símbolos internados de keywords;
 /// - metadados de diagnóstico por `NodeId` (`node_spans`).
 #[derive(Debug)]
 pub(crate) struct Preprocessor {
@@ -118,16 +67,30 @@ pub(crate) struct Preprocessor {
     pub(super) keywords: Keywords,
     /// Tabela de palavras reservadas da linguagem.
     pub(super) keyword_table: KeywordTable,
-    /// Símbolos internados de tokens fixos usados em diagnósticos.
-    pub(super) fixed_symbols: FixedSymbols,
     /// Tabela lateral de spans da IR indexada por `NodeId`.
     pub(super) node_spans: Vec<Span>,
+}
+
+/// Programa emitido pelo pré-processador, já separado por seção montável.
+///
+/// Diretivas próprias do pré-processador (`MACRO`, `EQU`, `IF` e `SECTION`) não
+/// são preservadas como linhas nessa estrutura. `SECTION TEXT` e `SECTION DATA`
+/// apenas controlam em qual vetor as linhas seguintes serão acumuladas.
+#[derive(Debug, Clone)]
+pub(crate) struct PreprocessedProgram {
+    /// Linhas da seção de texto/instruções, após expansão de macros e aplicação
+    /// de `IF`.
+    pub text: Vec<LogicalLine>,
+    /// Linhas da seção de dados, preservadas na ordem em que aparecem dentro de
+    /// `SECTION DATA`.
+    pub data: Vec<LogicalLine>,
 }
 
 /// Seção lógica corrente do fonte durante o pré-processamento.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Section {
-    /// Ainda não entrou em seção explícita.
+    /// Ainda não entrou em seção explícita. Linhas comuns nesse estado não
+    /// entram no programa preprocessado.
     None,
     /// Seção de texto/instruções.
     Text,
@@ -137,14 +100,66 @@ pub(crate) enum Section {
 
 /// Linha lógica produzida a partir do fluxo de tokens do lexer.
 ///
-/// `content` contém apenas tokens da linha (sem `NewLine`/`Eof`) e
-/// `terminator` guarda o separador original da linha no fonte.
+/// `content` contém apenas tokens da linha (sem `NewLine`) e `terminator`
+/// guarda a quebra que encerra a linha.
 #[derive(Debug, Clone)]
 pub(crate) struct LogicalLine {
     /// Conteúdo da linha lógica, sem token terminador.
     pub content: Vec<Token>,
-    /// Separador original da linha (`NewLine` ou `Eof`).
+    /// Quebra de linha real ou sintética que encerra a linha.
     pub terminator: Token,
+}
+
+/// Iterador que agrupa tokens do lexer em [`LogicalLine`]s.
+///
+/// Diferente de uma coleta antecipada em `Vec<LogicalLine>`, este tipo só monta
+/// a próxima linha quando o orquestrador pede `next()`. Isso evita percorrer e
+/// materializar todas as linhas antes do pré-processamento e mantém o mesmo
+/// cursor compartilhado por diretivas multilinha como `MACRO` e `IF`.
+pub(in crate::preprocessor) struct LogicalLines {
+    tokens: IntoIter<Token>,
+    current_line: Vec<Token>,
+}
+
+/// Iterador usado pelo orquestrador para percorrer linhas lógicas sob demanda.
+pub(in crate::preprocessor) type LogicalLineIter = Peekable<LogicalLines>;
+
+/// Conversão de um fluxo de tokens para um iterador de linhas lógicas.
+///
+/// O nome `into_logical_lines` deixa explícito que o vetor de tokens é consumido
+/// e que o resultado não é uma coleção materializada, mas um iterador que produz
+/// [`LogicalLine`]s sob demanda.
+pub(in crate::preprocessor) trait IntoLogicalLines {
+    /// Consome `self` e devolve um iterador de [`LogicalLine`]s.
+    fn into_logical_lines(self) -> LogicalLines;
+}
+
+impl IntoLogicalLines for Vec<Token> {
+    fn into_logical_lines(self) -> LogicalLines {
+        LogicalLines {
+            tokens: self.into_iter(),
+            current_line: Vec::new(),
+        }
+    }
+}
+
+impl Iterator for LogicalLines {
+    type Item = LogicalLine;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        for token in self.tokens.by_ref() {
+            if matches!(token.kind, TokenKind::NewLine) {
+                return Some(LogicalLine {
+                    content: std::mem::take(&mut self.current_line),
+                    terminator: token,
+                });
+            }
+
+            self.current_line.push(token);
+        }
+
+        None
+    }
 }
 
 /// Valor semântico normalizado para aliases `EQU`.

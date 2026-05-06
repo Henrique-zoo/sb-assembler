@@ -1,11 +1,12 @@
 //! Detectores de diretivas de seção (`SECTION TEXT` e `SECTION DATA`).
 //!
 //! Este arquivo concentra a triagem heurística das diretivas de seção usadas
-//! pelo pré-processador para identificar o contexto corrente do programa.
+//! pelo pré-processador para identificar trocas entre `TEXT` e `DATA`.
 //!
 //! Assim como os demais `looks_like_*`, as funções aqui são permissivas:
 //! - reconhecem intenção de uso da diretiva pelo prefixo;
-//! - deixam validação sintática/semântica detalhada para parser/execute.
+//! - deixam validação sintática para `parser`;
+//! - deixam a atualização de `current_section` para `execute`.
 
 use crate::{
     interner::Symbol,

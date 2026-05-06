@@ -1,17 +1,108 @@
-//! Orquestração do pré-processador.
+//! Orquestração do estágio de pré-processamento.
 //!
-//! Este módulo coordena o pipeline de pré-processamento por linha:
-//! 1. triagem com detectores (`detection::looks_like_*`);
-//! 2. validação sintática/extração (`parser::*`);
-//! 3. aplicação de efeitos (`execute::*`: registro de macro/EQU, expansão, controle de
-//!    fluxo) e acumulação de erros.
+//! Este módulo é o ponto de integração entre lexer, detectores, parsers e
+//! executores semânticos do pré-processador. Ele não tenta reconhecer a
+//! gramática inteira sozinho: sua responsabilidade é conduzir o fluxo por linha,
+//! manter o estado necessário entre linhas e materializar a saída preprocessada
+//! no formato que a montagem propriamente dita deve consumir.
 //!
-//! Separação de responsabilidades:
-//! - [`crate::preprocessor::detection`]: reconhecimento permissivo de tentativa
-//!   de diretiva;
-//! - [`crate::preprocessor::parser`]: validação sintática estrita e parsing;
-//! - [`crate::preprocessor::execute`]: execução semântica das diretivas;
-//! - este módulo: despacho por linha e montagem do output.
+//! ## Papel no pipeline
+//!
+//! O pré-processador recebe o vetor de tokens produzido pelo lexer. O contrato
+//! esperado é que esse vetor já termine com um `NewLine` real ou sintético, de
+//! modo que toda entrada possa ser percorrida como [`LogicalLine`] sem precisar
+//! de um token `EOF`.
+//!
+//! A partir daí, [`Preprocessor::process`] executa quatro passos:
+//! 1. transforma sob demanda o fluxo linear de tokens em linhas lógicas;
+//! 2. despacha cada linha de acordo com a seção corrente;
+//! 3. aplica efeitos de diretivas (`MACRO`, `EQU`, `IF` e `SECTION`);
+//! 4. devolve um [`PreprocessedProgram`] já separado em `text` e `data`.
+//!
+//! ## Linhas lógicas
+//!
+//! A unidade de trabalho deste módulo é [`LogicalLine`]. Ela separa:
+//! - `content`: tokens da linha, sem a quebra;
+//! - `terminator`: a quebra de linha que encerrou aquela linha.
+//!
+//! Preservar o terminador é importante para expansão de macros: o corpo da macro
+//! tem seus próprios terminadores, mas a última linha expandida deve herdar a
+//! quebra da linha de chamada para manter a forma textual estável.
+//!
+//! ## Despacho por seção
+//!
+//! O estado [`Section`] modela em qual parte do fonte o pré-processador está:
+//! - `Section::None`: região antes de uma seção explícita. Nesse contexto,
+//!   `MACRO` e `EQU` são registrados, mas linhas comuns não entram no programa
+//!   preprocessado;
+//! - `Section::Text`: região de instruções. Aqui `IF` pode consumir a próxima
+//!   linha, chamadas de macro podem expandir para várias linhas e linhas comuns
+//!   são emitidas para `PreprocessedProgram::text`;
+//! - `Section::Data`: região de dados. As linhas são preservadas para
+//!   `PreprocessedProgram::data` sem expansão de macro ou interpretação de `IF`.
+//!
+//! `SECTION TEXT` e `SECTION DATA` são tratados antes do despacho por seção
+//! porque sua função é justamente alterar esse contexto. Essas diretivas não
+//! aparecem como linhas emitidas; elas apenas controlam para qual vetor as
+//! linhas seguintes serão acumuladas.
+//!
+//! ## Detecção, parsing e execução
+//!
+//! A orquestração por linha é deliberadamente dividida em três camadas:
+//! - [`crate::preprocessor::detection`]: detectores `looks_like_*` fazem triagem
+//!   permissiva. Eles decidem se uma linha parece uma tentativa de diretiva ou
+//!   chamada de macro;
+//! - [`crate::preprocessor::parser`]: parsers validam a forma sintática e
+//!   constroem nós de IR com `NodeId`/`Span`;
+//! - [`crate::preprocessor::execute`]: executores aplicam efeitos semânticos,
+//!   como registrar uma macro, resolver `EQU`, avaliar `IF` ou expandir uma
+//!   chamada.
+//!
+//! Essa separação evita que uma linha malformada seja tratada como linha comum
+//! cedo demais. Primeiro o detector reconhece a intenção, depois o parser
+//! produz o diagnóstico sintático específico.
+//!
+//! ## Diretivas multilinha
+//!
+//! Diretivas que dependem da linha seguinte recebem acesso ao iterador de
+//! [`LogicalLine`]. Isso faz o dono da diretiva consumir o bloco que lhe
+//! pertence:
+//! - `MACRO ... ENDMACRO` é consumida pela execução do cabeçalho de macro;
+//! - `IF <cond>` consome imediatamente a próxima linha lógica quando precisa
+//!   decidir se ela será emitida.
+//!
+//! Assim, o avanço do iterador representa o progresso real do pré-processamento,
+//! sem um estado global extra para "estou dentro de macro" ou "a próxima linha
+//! pertence ao IF".
+//!
+//! ## Forma da saída
+//!
+//! A saída não é mais um fluxo textual único. O resultado de sucesso é:
+//! ```ignore
+//! PreprocessedProgram {
+//!     text: Vec<LogicalLine>,
+//!     data: Vec<LogicalLine>,
+//! }
+//! ```
+//!
+//! Quando esse resultado precisa voltar a ser renderizado como texto `.pre`, a
+//! etapa de renderização deve reintroduzir os cabeçalhos de seção:
+//! ```asm
+//! SECTION TEXT
+//! LOAD ZERO
+//! STOP
+//! SECTION DATA
+//! ZERO CONST 0
+//! ```
+//!
+//! ## Política de erros
+//!
+//! O pré-processador acumula diagnósticos em vez de interromper no primeiro
+//! erro. Cada linha retorna seus efeitos por meio de [`LineProcessResult`]:
+//! linhas emitidas em `output` e diagnósticos em `errors`. Ao final,
+//! [`Preprocessor::process`] devolve:
+//! - `Ok(PreprocessedProgram)` quando não houve erros;
+//! - `Err(Vec<PreprocessorError>)` quando um ou mais problemas foram encontrados.
 
 mod detection;
 mod execute;
@@ -23,32 +114,60 @@ mod types;
 pub(in crate::preprocessor) use number::{
     NumberParseError, parse_signed_number, parse_unsigned_number,
 };
-pub(crate) use types::{Keywords, LogicalLine, Preprocessor};
+pub(in crate::preprocessor) use types::LogicalLineIter;
+pub(crate) use types::{Keywords, LogicalLine, PreprocessedProgram, Preprocessor};
 
-use std::{collections::HashMap, iter::Peekable, vec::IntoIter};
+use std::collections::HashMap;
 
 use crate::{
     errors::{PreprocessorError, PreprocessorErrorKind},
     interner::Interner,
     language::KeywordTable,
-    lexer::{Span, Token, TokenKind},
-    preprocessor::{
-        ir::NodeId,
-        types::{FixedSymbols, Section},
-    },
+    lexer::{Span, Token},
+    preprocessor::{ir::NodeId, types::Section},
 };
 
-/// Efeitos produzidos pelo processamento de uma única linha lógica.
+use self::types::IntoLogicalLines;
+
+/// Efeitos produzidos ao processar uma linha lógica.
+///
+/// O resultado é plural porque uma linha de entrada não tem relação 1:1 com a
+/// saída:
+/// - diretivas como `SECTION`, `MACRO`, `EQU` e `IF` falso podem emitir zero
+///   linhas;
+/// - linhas comuns em `TEXT`/`DATA` emitem uma linha;
+/// - chamadas de macro podem emitir várias linhas.
+///
+/// O orquestrador agrega esses efeitos no final de cada iteração, anexando as
+/// linhas emitidas à seção corrente e acumulando os diagnósticos.
 struct LineProcessResult {
+    /// Linhas produzidas pela linha lógica processada.
     output: Vec<LogicalLine>,
+    /// Diagnósticos coletados durante detecção, parsing ou execução.
     errors: Vec<PreprocessorError>,
 }
 
 impl Preprocessor {
-    /// Registra um nó da IR e retorna seu `NodeId`.
+    /// Registra o `Span` de um nó da IR e retorna seu identificador.
     ///
-    /// O `NodeId` é estável durante todo o processamento e pode ser usado para
-    /// recuperar o `Span` com [`Self::span_of_node`].
+    /// O pré-processador guarda spans em uma tabela lateral para que as
+    /// estruturas da IR carreguem apenas um [`NodeId`]. Isso evita duplicar
+    /// spans em todos os nós e mantém uma fonte única para diagnósticos.
+    ///
+    /// # Parâmetros
+    /// - `span`: intervalo de fonte correspondente ao nó recém-construído.
+    ///
+    /// # Retorno
+    /// - [`NodeId`] estável durante toda a execução do pré-processador.
+    ///
+    /// # Efeitos colaterais
+    /// - adiciona `span` ao final de `self.node_spans`;
+    /// - o índice usado no [`NodeId`] é a posição recém-alocada nessa tabela.
+    ///
+    /// # Uso no pipeline
+    /// Parsers chamam esta função ao construir nós como `MacroHeader`,
+    /// `MacroCall`, `EquDecl`, `IfDecl` e `SectionDecl`. Etapas posteriores
+    /// podem chamar [`Self::span_of_node`] para recuperar o span original.
     fn alloc_node_id(&mut self, span: Span) -> NodeId {
         let id = NodeId(self.node_spans.len() as u32);
         self.node_spans.push(span);
@@ -57,8 +176,17 @@ impl Preprocessor {
 
     /// Resolve o `Span` associado a um `NodeId`.
     ///
-    /// Retorna `Span::default()` se o `NodeId` estiver fora dos limites da
-    /// tabela (fallback defensivo).
+    /// # Parâmetros
+    /// - `node_id`: identificador retornado por [`Self::alloc_node_id`].
+    ///
+    /// # Retorno
+    /// - o [`Span`] armazenado na tabela lateral;
+    /// - [`Span::default`] se o identificador estiver fora dos limites.
+    ///
+    /// # Observações
+    /// O fallback com `Span::default()` é defensivo. Em um fluxo válido, todo
+    /// `NodeId` carregado pela IR deve ter sido produzido por
+    /// [`Self::alloc_node_id`] no mesmo `Preprocessor`.
     fn span_of_node(&self, node_id: NodeId) -> Span {
         self.node_spans
             .get(node_id.0 as usize)
@@ -68,9 +196,31 @@ impl Preprocessor {
 
     /// Cria uma instância de `Preprocessor` pronta para uso.
     ///
-    /// A construção inicializa a seção atual como `Section::None`, cria tabelas
-    /// vazias para macros e `EQU`, e interna as keywords do pré-processador
-    /// para comparações eficientes por símbolo.
+    /// A construção prepara o estado necessário para um fluxo completo de
+    /// pré-processamento: tabelas semânticas vazias, seção inicial indefinida,
+    /// keywords internadas e tabela compartilhada de palavras reservadas.
+    ///
+    /// # Parâmetros
+    /// - `interner`: tabela de símbolos que será compartilhada com lexer,
+    ///   parser e execução semântica;
+    /// - `keyword_table`: tabela de palavras reservadas da linguagem, usada
+    ///   principalmente para triagem semântica de chamadas de macro.
+    ///
+    /// # Estado inicial
+    /// - `macros`: vazio;
+    /// - `equs`: vazio;
+    /// - `current_section`: [`Section::None`];
+    /// - `node_spans`: vazio.
+    ///
+    /// # Efeitos colaterais
+    /// Interna as keywords reconhecidas pelo pré-processador (`SECTION`,
+    /// `TEXT`, `DATA`, `MACRO`, `ENDMACRO`, `EQU` e `IF`) no `interner`
+    /// recebido. Isso permite comparar keywords por símbolo nas etapas
+    /// seguintes.
+    ///
+    /// # Retorno
+    /// - `Preprocessor` inicializado e pronto para receber tokens em
+    ///   [`Self::process`].
     ///
     /// # Exemplo
     /// ```rust,ignore
@@ -89,40 +239,55 @@ impl Preprocessor {
             if_kw: interner.entry("IF").or_insert(),
         };
 
-        let fixed_symbols = FixedSymbols {
-            ampersand: interner.entry("&").or_insert(),
-            comma: interner.entry(",").or_insert(),
-            colon: interner.entry(":").or_insert(),
-            plus: interner.entry("+").or_insert(),
-            minus: interner.entry("-").or_insert(),
-            generic_ident: interner.entry("A").or_insert(),
-            generic_number: interner.entry("10").or_insert(),
-        };
-
         Self {
             macros: HashMap::new(),
             equs: HashMap::new(),
             current_section: Section::None,
             keywords,
             keyword_table,
-            fixed_symbols,
             node_spans: Vec::new(),
         }
     }
 
-    /// Executa o pré-processamento sobre o fluxo de tokens produzido pelo lexer.
+    /// Executa o pré-processamento sobre os tokens produzidos pelo lexer.
     ///
-    /// A função agrupa os tokens em linhas lógicas e delega cada linha para
-    /// `process_line`. Os separadores originais (`NewLine` e `Eof`) são
-    /// preservados no resultado.
+    /// Este é o orquestrador do módulo. Ele transforma tokens em linhas
+    /// lógicas, mantém o contexto de seção, permite que diretivas consumam
+    /// linhas futuras e separa a saída montável em `text` e `data`.
     ///
-    /// O processamento não interrompe no primeiro problema: erros são
-    /// acumulados e devolvidos juntos no final. Durante esse fluxo, o
-    /// pré-processador pode alterar estado, registrar diretivas e expandir
-    /// macros.
+    /// # Parâmetros
+    /// - `tokens`: fluxo completo de tokens produzido pelo lexer;
+    /// - `interner`: tabela de símbolos compartilhada com as etapas anteriores
+    ///   e usada para resolver símbolos durante execução semântica.
     ///
-    /// Retorna `Ok(output)` quando nenhum erro foi acumulado e `Err(errors)`
-    /// quando há um ou mais diagnósticos.
+    /// # Contrato de entrada
+    /// - o lexer deve garantir uma quebra `NewLine` ao final, real ou sintética;
+    /// - os tokens já devem estar internados no mesmo [`Interner`] recebido por
+    ///   esta função.
+    ///
+    /// # Fluxo
+    /// 1. `tokens.into_logical_lines()` agrupa tokens por linha sob demanda.
+    /// 2. Linhas `SECTION TEXT`/`SECTION DATA` atualizam `current_section`.
+    /// 3. As demais linhas são despachadas para o handler da seção corrente.
+    /// 4. As linhas emitidas são anexadas a [`PreprocessedProgram::text`] ou
+    ///    [`PreprocessedProgram::data`].
+    ///
+    /// # Retorno
+    /// - `Ok(PreprocessedProgram { text, data })` quando nenhum erro foi
+    ///   acumulado;
+    /// - `Err(errors)` quando um ou mais diagnósticos foram encontrados.
+    ///
+    /// # Observações
+    /// Diretivas próprias do pré-processador não são preservadas como linhas na
+    /// saída. `SECTION` controla roteamento, `MACRO` registra definições, `EQU`
+    /// registra aliases e `IF` decide se a próxima linha deve ser emitida.
+    ///
+    /// # Efeitos colaterais
+    /// Atualiza o estado interno do pré-processador:
+    /// - registra macros em `self.macros`;
+    /// - registra aliases em `self.equs`;
+    /// - altera `self.current_section` quando encontra `SECTION`;
+    /// - adiciona spans de nós em `self.node_spans`.
     ///
     /// # Exemplo
     /// ```rust,ignore
@@ -134,7 +299,6 @@ impl Preprocessor {
     /// let tokens = vec![
     ///     Token::new(TokenKind::Ident(add), Span { pos: 0, line: 1, column: 1, len: 3 }),
     ///     Token::new(TokenKind::NewLine, Span { pos: 3, line: 1, column: 4, len: 1 }),
-    ///     Token::new(TokenKind::Eof, Span { pos: 4, line: 2, column: 1, len: 0 }),
     /// ];
     ///
     /// let result = preprocessor.process(tokens, &mut interner);
@@ -144,255 +308,321 @@ impl Preprocessor {
         &mut self,
         tokens: Vec<Token>,
         interner: &mut Interner,
-    ) -> Result<Vec<LogicalLine>, Vec<PreprocessorError>> {
-        let mut output = Vec::new();
-        let mut cod_lines = Vec::new();
+    ) -> Result<PreprocessedProgram, Vec<PreprocessorError>> {
+        let mut text_lines = Vec::new();
         let mut data_lines = Vec::new();
-        let mut eof_line = None;
         let mut errors = Vec::new();
-        let mut lines = Self::collect_logical_lines(tokens).into_iter().peekable();
+        let mut lines = tokens.into_logical_lines().peekable();
 
         while let Some(logical_line) = lines.next() {
-            let line_result = self.process_line(logical_line, &mut lines, interner);
-            for emitted_line in line_result.output {
-                if matches!(emitted_line.terminator.kind, TokenKind::Eof) {
-                    eof_line = Some(emitted_line);
-                    continue;
-                }
+            let is_section_line = {
+                let line = logical_line.content.as_slice();
+                self.looks_like_text_section_line(line) || self.looks_like_data_section_line(line)
+            };
 
+            let line_result = if is_section_line {
+                self.process_section_line(logical_line.content.as_slice())
+            } else {
                 match self.current_section {
-                    Section::None => output.push(emitted_line),
+                    Section::None => {
+                        self.process_none_section_line(logical_line, &mut lines, interner)
+                    }
+                    Section::Text => {
+                        self.process_text_section_line(logical_line, &mut lines, interner)
+                    }
+                    Section::Data => self.process_data_section_line(logical_line),
+                }
+            };
+
+            for emitted_line in line_result.output {
+                match self.current_section {
+                    Section::None => {}
                     Section::Data => data_lines.push(emitted_line),
-                    Section::Text => cod_lines.push(emitted_line),
+                    Section::Text => text_lines.push(emitted_line),
                 }
             }
             errors.extend(line_result.errors);
         }
 
-        output.extend(cod_lines);
-        output.extend(data_lines);
-        if let Some(eof_line) = eof_line {
-            output.push(eof_line);
-        }
-
         if errors.is_empty() {
-            Ok(output)
+            Ok(PreprocessedProgram {
+                text: text_lines,
+                data: data_lines,
+            })
         } else {
             Err(errors)
         }
     }
 
-    /// Processa uma linha lógica (sem `NewLine`/`Eof`).
+    /// Processa uma linha de troca de seção.
     ///
-    /// A função usa os detectores `looks_like_*` como triagem rápida e delega a
-    /// validação/aplicação da diretiva para as rotinas correspondentes.
-    ///
-    /// Despacho por seção:
-    /// - `SECTION TEXT`/`SECTION DATA` são tratados antes de qualquer outro
-    ///   fluxo para permitir troca de contexto;
-    /// - em `Section::None`, apenas tentativas de `MACRO` e `EQU` são
-    ///   reconhecidas;
-    /// - em `Section::Text`, apenas tentativas de `IF` e `macro call` são
-    ///   reconhecidas;
-    /// - em `Section::Data`, linhas são apenas repassadas para o output.
-    ///
-    /// Para definição de macro, `execute_macro_header` recebe o iterador de
-    /// linhas e consome o bloco até `ENDMACRO`.
-    ///
-    /// Essa função pode atualizar tabelas internas e retorna os efeitos
-    /// produzidos naquela linha (`output` emitido + erros acumulados).
-    ///
-    /// # Exemplo (uso interno)
-    /// ```rust,ignore
-    /// let mut lines = Vec::new().into_iter().peekable();
-    /// let result = preprocessor.process_line(line, &mut lines, &mut interner);
-    /// assert!(result.errors.is_empty());
+    /// Forma esperada:
+    /// ```asm
+    /// SECTION TEXT
+    /// SECTION DATA
     /// ```
-    fn process_line(
+    ///
+    /// # Parâmetros
+    /// - `line`: conteúdo da linha lógica, sem o token `NewLine` terminador.
+    ///
+    /// # Retorno
+    /// - [`LineProcessResult`] com `output` sempre vazio;
+    /// - `errors` vazio quando a declaração é válida;
+    /// - `errors` com um diagnóstico sintático quando a linha parece uma troca
+    ///   de seção, mas está malformada.
+    ///
+    /// # Efeitos colaterais
+    /// Quando o parser retorna uma declaração válida, chama
+    /// `execute_section_directive` e atualiza `self.current_section`.
+    ///
+    /// # Contrato de orquestração
+    /// Esta função é chamada antes do despacho por seção. `SECTION` altera o
+    /// contexto usado pelas próximas linhas, mas não é preservada dentro de
+    /// [`PreprocessedProgram`].
+    fn process_section_line(&mut self, line: &[Token]) -> LineProcessResult {
+        let mut errors = Vec::new();
+
+        if self.looks_like_text_section_line(line) {
+            match self.parse_text_section_line(line) {
+                Ok(section_decl) => self.execute_section_directive(section_decl),
+                Err(err) => errors.push(err),
+            }
+        } else if self.looks_like_data_section_line(line) {
+            match self.parse_data_section_line(line) {
+                Ok(section_decl) => self.execute_section_directive(section_decl),
+                Err(err) => errors.push(err),
+            }
+        }
+
+        LineProcessResult {
+            output: Vec::new(),
+            errors,
+        }
+    }
+
+    /// Processa uma linha enquanto o pré-processador está fora de uma seção.
+    ///
+    /// Nesse contexto, o fonte ainda não entrou em `SECTION TEXT` nem em
+    /// `SECTION DATA`. O pré-processador permite declarações globais (`MACRO` e
+    /// `EQU`), mas linhas comuns não entram no programa preprocessado porque
+    /// ainda não há seção montável ativa.
+    ///
+    /// Formas reconhecidas:
+    /// ```asm
+    /// NOME: MACRO &ARG
+    ///     ; corpo consumido até ENDMACRO
+    /// ENDMACRO
+    ///
+    /// CONST EQU 10
+    /// ```
+    ///
+    /// # Parâmetros
+    /// - `logical_line`: linha atual, sem `NewLine` em `content`;
+    /// - `lines`: iterador das linhas seguintes, usado por `MACRO` para
+    ///   consumir o corpo até `ENDMACRO`;
+    /// - `interner`: tabela usada para normalizar e resolver valores de `EQU`.
+    ///
+    /// # Retorno
+    /// - `output` vazio para `MACRO` e `EQU` válidos;
+    /// - `output` com a própria linha quando ela não ativa nenhum fluxo
+    ///   reconhecido;
+    /// - `errors` com falhas sintáticas ou semânticas acumuladas.
+    ///
+    /// # Efeitos colaterais
+    /// - `MACRO` válida registra uma definição em `self.macros`;
+    /// - `EQU` válido registra um alias em `self.equs`;
+    /// - parsers podem alocar spans em `self.node_spans`.
+    ///
+    /// # Observação
+    /// Embora uma linha comum possa ser retornada em `output`, o orquestrador em
+    /// [`Self::process`] descarta emissões enquanto `current_section` ainda é
+    /// [`Section::None`].
+    fn process_none_section_line(
         &mut self,
         logical_line: LogicalLine,
-        lines: &mut Peekable<IntoIter<LogicalLine>>,
+        lines: &mut LogicalLineIter,
         interner: &mut Interner,
     ) -> LineProcessResult {
         let mut output = Vec::new();
         let mut errors = Vec::new();
         let line = logical_line.content.as_slice();
-        let terminator = logical_line.terminator;
 
-        if self.looks_like_text_section_line(line) {
-            match self.parse_text_section_line(line) {
-                Ok(section_decl) => {
-                    output.extend(self.execute_section_directive(section_decl, line, terminator))
-                }
+        if self.looks_like_macro_header(line) {
+            let Some(macro_header) = self
+                .parse_macro_header(line)
+                .map_err(|err| errors.push(err))
+                .ok()
+            else {
+                return LineProcessResult { output, errors };
+            };
+
+            if let Err(err) = self.execute_macro_header(macro_header, lines) {
+                errors.push(err);
+            }
+
+            return LineProcessResult { output, errors };
+        }
+
+        if self.looks_like_equ_line(line) {
+            let Some(equ_decl) = self
+                .parse_equ_line(line)
+                .map_err(|err| errors.push(err))
+                .ok()
+            else {
+                return LineProcessResult { output, errors };
+            };
+
+            if let Err(err) = self.execute_equ_directive(equ_decl, interner) {
+                errors.push(err);
+            }
+
+            return LineProcessResult { output, errors };
+        }
+
+        output.push(logical_line);
+        LineProcessResult { output, errors }
+    }
+
+    /// Processa uma linha dentro de `SECTION TEXT`.
+    ///
+    /// Esta é a região de instruções do programa. Aqui o pré-processador aplica
+    /// controle condicional, expande chamadas de macro e preserva instruções
+    /// comuns para a etapa de montagem.
+    ///
+    /// Formas reconhecidas:
+    /// ```asm
+    /// IF FLAG
+    /// ADD VALUE
+    ///
+    /// MACRO_NAME ARG1, ARG2
+    ///
+    /// LOAD VALUE
+    /// ```
+    ///
+    /// # Parâmetros
+    /// - `logical_line`: linha atual de `SECTION TEXT`;
+    /// - `lines`: iterador das próximas linhas, usado por `IF` para consumir a
+    ///   linha controlada pela condição;
+    /// - `interner`: tabela usada para resolver símbolos, números e aliases
+    ///   `EQU` durante avaliação de `IF`.
+    ///
+    /// # Retorno
+    /// - `output` vazio quando `IF` avalia falso;
+    /// - `output` com uma linha quando a entrada é instrução comum ou `IF`
+    ///   avalia verdadeiro;
+    /// - `output` com várias linhas quando há expansão de macro;
+    /// - `errors` com diagnósticos de `IF`, chamada de macro ou `ENDMACRO`
+    ///   inesperado.
+    ///
+    /// # Efeitos colaterais
+    /// - `IF` pode avançar o iterador `lines`;
+    /// - chamadas de macro consultam `self.macros`;
+    /// - parsers podem alocar spans em `self.node_spans`.
+    ///
+    /// # Contrato de terminador
+    /// Quando uma chamada de macro expande para várias linhas, a última linha
+    /// emitida recebe o `terminator` da linha de chamada. Isso preserva a
+    /// fronteira textual observada pelo restante do pipeline.
+    fn process_text_section_line(
+        &mut self,
+        logical_line: LogicalLine,
+        lines: &mut LogicalLineIter,
+        interner: &mut Interner,
+    ) -> LineProcessResult {
+        let mut output = Vec::new();
+        let mut errors = Vec::new();
+        let LogicalLine {
+            content,
+            terminator,
+        } = logical_line;
+        let line = content.as_slice();
+
+        if self.looks_like_if_line(line) {
+            let Some(if_decl) = self
+                .parse_if_line(line)
+                .map_err(|err| errors.push(err))
+                .ok()
+            else {
+                return LineProcessResult { output, errors };
+            };
+
+            match self.execute_if_directive(if_decl, lines, interner) {
+                Ok(Some(emitted_tokens)) => output.push(LogicalLine {
+                    content: emitted_tokens,
+                    terminator,
+                }),
+                Ok(None) => {}
                 Err(err) => errors.push(err),
             }
             return LineProcessResult { output, errors };
         }
 
-        if self.looks_like_data_section_line(line) {
-            match self.parse_data_section_line(line) {
-                Ok(section_decl) => {
-                    output.extend(self.execute_section_directive(section_decl, line, terminator))
-                }
-                Err(err) => errors.push(err),
-            }
-            return LineProcessResult { output, errors };
+        if self.looks_like_endmacro_line(line) {
+            errors.push(PreprocessorError {
+                kind: PreprocessorErrorKind::UnexpectedEndMacro,
+                span: line[0].span,
+            })
         }
 
-        if matches!(self.current_section, Section::Data) {
-            output.push(LogicalLine {
-                content: line.to_vec(),
-                terminator,
-            });
-            return LineProcessResult { output, errors };
-        }
-
-        match self.current_section {
-            Section::None => {
-                if self.looks_like_macro_header(line) {
-                    let Some(macro_header) = self
-                        .parse_macro_header(line)
-                        .map_err(|err| errors.push(err))
-                        .ok()
-                    else {
-                        return LineProcessResult { output, errors };
-                    };
-
-                    match self.execute_macro_header(macro_header, lines) {
-                        Ok(()) => {}
-                        Err(err) => errors.push(err),
-                    }
-                    return LineProcessResult { output, errors };
-                }
-
-                if self.looks_like_equ_line(line) {
-                    let Some(equ_decl) = self
-                        .parse_equ_line(line)
-                        .map_err(|err| errors.push(err))
-                        .ok()
-                    else {
-                        return LineProcessResult { output, errors };
-                    };
-
-                    if let Err(err) = self.execute_equ_directive(equ_decl, interner) {
-                        errors.push(err);
-                    }
-                    return LineProcessResult { output, errors };
-                }
-            }
-            Section::Text => {
-                if self.looks_like_if_line(line) {
-                    let Some(if_decl) = self
-                        .parse_if_line(line)
-                        .map_err(|err| errors.push(err))
-                        .ok()
-                    else {
-                        return LineProcessResult { output, errors };
-                    };
-
-                    match self.execute_if_directive(if_decl, lines, interner) {
-                        Ok(Some(emitted_tokens)) => output.push(LogicalLine {
-                            content: emitted_tokens,
-                            terminator,
-                        }),
-                        Ok(None) => {}
-                        Err(err) => errors.push(err),
-                    }
-                    return LineProcessResult { output, errors };
-                }
-
-                if self.looks_like_endmacro_line(line) {
-                    errors.push(PreprocessorError {
-                        kind: PreprocessorErrorKind::UnexpectedEndMacro,
-                        span: line[0].span,
-                    })
-                }
-
-                if self.looks_like_macro_call(line) {
-                    match self.parse_macro_call(line) {
-                        Ok(macro_call) => match self.execute_macro_call(macro_call) {
-                            Ok(mut expanded_lines) => {
-                                if let Some(last_line) = expanded_lines.last_mut() {
-                                    last_line.terminator = terminator;
-                                } else {
-                                    expanded_lines.push(LogicalLine {
-                                        content: Vec::new(),
-                                        terminator,
-                                    });
-                                }
-
-                                output.extend(expanded_lines);
-                                return LineProcessResult { output, errors };
-                            }
-                            Err(err) => errors.push(err),
-                        },
-                        Err(err) => {
-                            errors.push(err);
+        if self.looks_like_macro_call(line) {
+            match self.parse_macro_call(line) {
+                Ok(macro_call) => match self.execute_macro_call(macro_call) {
+                    Ok(mut expanded_lines) => {
+                        if let Some(last_line) = expanded_lines.last_mut() {
+                            last_line.terminator = terminator;
+                        } else {
+                            expanded_lines.push(LogicalLine {
+                                content: Vec::new(),
+                                terminator,
+                            });
                         }
+
+                        output.extend(expanded_lines);
+                        return LineProcessResult { output, errors };
                     }
+                    Err(err) => errors.push(err),
+                },
+                Err(err) => {
+                    errors.push(err);
                 }
             }
-            Section::Data => {}
         }
 
         output.push(LogicalLine {
-            content: line.to_vec(),
+            content,
             terminator,
         });
         LineProcessResult { output, errors }
     }
 
-    /// Agrupa o fluxo linear de tokens em [`LogicalLine`]s.
+    /// Processa uma linha dentro de `SECTION DATA`.
     ///
-    /// Cada linha lógica é finalizada quando encontra `NewLine` ou `Eof`.
-    /// Nesse ponto:
-    /// - `content` recebe os tokens acumulados antes do terminador;
-    /// - `terminator` guarda o separador original da linha.
+    /// A seção de dados é tratada como conteúdo montável bruto neste estágio.
+    /// O pré-processador não interpreta `IF`, não expande chamadas de macro e
+    /// não tenta validar a gramática dos dados aqui.
     ///
-    /// Convenção de fronteira final:
-    /// - se o arquivo termina sem `\n` após a última linha de conteúdo, a
-    ///   função cria um `NewLine` sintético como terminador dessa linha;
-    /// - `Eof` é sempre materializado como uma linha lógica própria
-    ///   (`content` vazio, `terminator = Eof`).
+    /// Forma típica:
+    /// ```asm
+    /// VALUE SPACE
+    /// TABLE CONST 4
+    /// ```
     ///
-    /// Preservar o `terminator` permite que as próximas etapas processem por
-    /// linha sem perder a estrutura original do fonte (linhas vazias,
-    /// quebras e fim de arquivo continuam explícitos no pipeline).
+    /// # Parâmetros
+    /// - `logical_line`: linha atual de `SECTION DATA`.
     ///
-    /// Contrato esperado:
-    /// - o lexer deve emitir `Eof`;
-    /// - a função não valida sintaxe, apenas reorganiza tokens por linha.
+    /// # Retorno
+    /// - [`LineProcessResult`] com `output` contendo exatamente a linha
+    ///   recebida;
+    /// - `errors` sempre vazio.
     ///
-    /// Nota:
-    /// - se a entrada não contiver `NewLine`/`Eof` ao final, os tokens
-    ///   remanescentes não são emitidos como linha lógica.
-    fn collect_logical_lines(tokens: Vec<Token>) -> Vec<LogicalLine> {
-        let mut lines = Vec::new();
-        let mut current_line = Vec::new();
-
-        for token in tokens {
-            match &token.kind {
-                TokenKind::NewLine => lines.push(LogicalLine {
-                    content: std::mem::take(&mut current_line),
-                    terminator: token,
-                }),
-                TokenKind::Eof => {
-                    if !current_line.is_empty() {
-                        lines.push(LogicalLine {
-                            content: std::mem::take(&mut current_line),
-                            terminator: Token::new(TokenKind::NewLine, Span::default()),
-                        });
-                    }
-                    lines.push(LogicalLine {
-                        content: vec![],
-                        terminator: token,
-                    })
-                }
-                _ => current_line.push(token),
-            }
+    /// # Efeitos colaterais
+    /// - nenhum. A função apenas preserva a linha para
+    ///   [`PreprocessedProgram::data`].
+    fn process_data_section_line(&mut self, logical_line: LogicalLine) -> LineProcessResult {
+        LineProcessResult {
+            output: vec![logical_line],
+            errors: Vec::new(),
         }
-
-        lines
     }
 }
 

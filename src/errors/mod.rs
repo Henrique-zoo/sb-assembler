@@ -2,8 +2,8 @@
 //!
 //! Este módulo centraliza os diagnósticos emitidos pelos componentes internos,
 //! mantendo uma API única para:
-//! - léxico ([`lexer`]);
-//! - pré-processamento ([`preprocessor`]).
+//! - léxico;
+//! - pré-processamento.
 //!
 //! Objetivos principais:
 //! - padronizar o formato dos erros;

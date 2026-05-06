@@ -111,6 +111,37 @@ pub(crate) enum DirectiveKind {
     MacroCall,
 }
 
+/// Token ou classe de token esperada por uma gramática de diretiva.
+///
+/// Diferente de [`TokenKind`], este tipo permite representar expectativas
+/// genéricas como "um identificador" sem fabricar um `Symbol` artificial para
+/// diagnóstico.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExpectedToken {
+    /// Qualquer identificador.
+    Ident,
+    /// Qualquer literal numérico.
+    Number,
+    /// Keyword específica internada.
+    Keyword(Symbol),
+    /// Token fixo específico (`:`, `,`, `&`, `+`, `-` etc.).
+    Exact(TokenKind),
+}
+
+impl ExpectedToken {
+    /// Converte um [`TokenKind`] concreto na expectativa equivalente.
+    ///
+    /// `Ident(_)` e `Number(_)` viram expectativas por classe; os demais tokens
+    /// são preservados como tokens exatos.
+    pub(crate) fn from_token_kind(kind: TokenKind) -> Self {
+        match kind {
+            TokenKind::Ident(_) => Self::Ident,
+            TokenKind::Number(_) => Self::Number,
+            kind => Self::Exact(kind),
+        }
+    }
+}
+
 /// Erros sintáticos compartilhados entre diferentes diretivas.
 #[derive(Debug, Clone)]
 pub(crate) enum DirectiveSyntaxErrorKind {
@@ -119,14 +150,14 @@ pub(crate) enum DirectiveSyntaxErrorKind {
     /// Token faltando para a gramática daquela diretiva (na prática, é unreachable)
     MissingToken {
         directive: DirectiveKind,
-        token_missed: TokenKind,
+        expected: ExpectedToken,
     },
     /// Declaração inválida - Erro de fallback para tratar casos supostamente unreacheable
     InvalidDeclaration { directive: DirectiveKind },
     /// Token inesperado para a gramática daquela diretiva
     UnexpectedToken {
         directive: DirectiveKind,
-        expected_token: TokenKind,
+        expected: ExpectedToken,
     },
     /// Token inesperado específico para a gramática daquela diretiva - trato erros de sintaxe "clássicos" para melhorar a mensagem de erro
     ForbiddenToken { directive: DirectiveKind },

@@ -1,7 +1,7 @@
 use crate::{
     errors::{
-        DirectiveKind, DirectiveSyntaxErrorKind, InvalidParamKind, MacroHeaderErrorKind,
-        PreprocessorError, PreprocessorErrorKind,
+        DirectiveKind, DirectiveSyntaxErrorKind, ExpectedToken, InvalidParamKind,
+        MacroHeaderErrorKind, PreprocessorError, PreprocessorErrorKind,
     },
     interner::Symbol,
     lexer::{Span, Token, TokenKind},
@@ -316,7 +316,7 @@ impl Preprocessor {
     /// 4. consolida o `span` da linha inteira.
     ///
     /// Parâmetros:
-    /// - `line`: conteúdo da linha (sem `NewLine`/`Eof`);
+    /// - `line`: conteúdo da linha (sem `NewLine`);
     /// - `terminator`: terminador original da linha no fonte.
     ///
     /// Retorno:
@@ -430,7 +430,7 @@ impl Preprocessor {
             Self::directive_sintatic_error(
                 DirectiveSyntaxErrorKind::MissingToken {
                     directive: DirectiveKind::MacroBody,
-                    token_missed: TokenKind::Ident(self.fixed_symbols.generic_ident),
+                    expected: ExpectedToken::Ident,
                 },
                 fallback_span,
             )
@@ -447,7 +447,7 @@ impl Preprocessor {
             Err(Self::directive_sintatic_error(
                 DirectiveSyntaxErrorKind::UnexpectedToken {
                     directive: DirectiveKind::MacroBody,
-                    expected_token: TokenKind::Ident(self.fixed_symbols.generic_ident),
+                    expected: ExpectedToken::Ident,
                 },
                 param_token.span,
             ))

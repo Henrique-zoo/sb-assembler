@@ -26,7 +26,7 @@ pub(crate) struct Span {
     pub column: u32,
     /// Comprimento do token em bytes.
     ///
-    /// Para `Eof`, o valor esperado é `0`.
+    /// Quebras de linha sintéticas de fim de entrada usam `len = 0`.
     pub len: usize,
 }
 
@@ -63,10 +63,8 @@ pub(crate) enum TokenKind {
     /// `-`.
     Minus,
 
-    /// Quebra de linha (`\n`) materializada como token.
+    /// Quebra de linha (`\n`) real ou sintética ao final da entrada.
     NewLine,
-    /// Marcador de fim de arquivo, emitido uma única vez.
-    Eof,
 }
 
 /// Unidade léxica emitida pelo lexer.

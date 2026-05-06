@@ -1,7 +1,7 @@
 use crate::{
     errors::{
-        DirectiveKind, DirectiveSyntaxErrorKind, InvalidArgKind, MacroCallSyntaticErrorKind,
-        PreprocessorError, PreprocessorErrorKind,
+        DirectiveKind, DirectiveSyntaxErrorKind, ExpectedToken, InvalidArgKind,
+        MacroCallSyntaticErrorKind, PreprocessorError, PreprocessorErrorKind,
     },
     interner::Symbol,
     lexer::{Span, Token, TokenKind},
@@ -92,7 +92,7 @@ impl Preprocessor {
             Self::directive_sintatic_error(
                 DirectiveSyntaxErrorKind::MissingToken {
                     directive: DirectiveKind::MacroCall,
-                    token_missed: TokenKind::Ident(self.fixed_symbols.generic_ident),
+                    expected: ExpectedToken::Ident,
                 },
                 Span::default(),
             )
@@ -163,7 +163,7 @@ impl Preprocessor {
                 return Err(Self::directive_sintatic_error(
                     DirectiveSyntaxErrorKind::UnexpectedToken {
                         directive: DirectiveKind::MacroCall,
-                        expected_token: TokenKind::Comma,
+                        expected: ExpectedToken::Exact(TokenKind::Comma),
                     },
                     comma.span,
                 ));

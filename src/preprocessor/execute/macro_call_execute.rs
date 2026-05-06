@@ -141,9 +141,9 @@ impl Preprocessor {
     /// - o terminador é herdado de `MacroBodyLine::terminator`.
     ///
     /// Integração:
-    /// - o orquestrador (`process_line`) pode ajustar o terminador da última
+    /// - o orquestrador (`process`) pode ajustar o terminador da última
     ///   linha expandida para reaproveitar o terminador original da linha de
-    ///   chamada (`NewLine`/`Eof`).
+    ///   chamada.
     fn expand_macro_body(
         &self,
         macro_def: &Macro,

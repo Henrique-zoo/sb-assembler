@@ -2,7 +2,7 @@ use super::*;
 
 use crate::{
     errors::{
-        DirectiveKind, DirectiveSyntaxErrorKind, EquDirectiveSyntaticErrorKind,
+        DirectiveKind, DirectiveSyntaxErrorKind, EquDirectiveSyntaticErrorKind, ExpectedToken,
         IfDirectiveSemanticErrorKind, IfDirectiveSyntaticErrorKind, InvalidArgKind,
         MacroCallSemanticErrorKind, MacroCallSyntaticErrorKind, PreprocessorError,
         PreprocessorErrorKind,
@@ -19,7 +19,7 @@ fn lex_ok(source: &str, interner: &mut Interner) -> Vec<Token> {
         .expect("lexer should succeed")
 }
 
-fn preprocess_ok(source: &str) -> (Vec<LogicalLine>, Interner) {
+fn preprocess_ok(source: &str) -> (PreprocessedProgram, Interner) {
     let mut interner = Interner::new();
     let keyword_table = KeywordTable::new(&mut interner);
     let tokens = lex_ok(source, &mut interner);
@@ -59,7 +59,6 @@ fn token_to_text(token: &Token, interner: &Interner) -> String {
         TokenKind::Plus => "+".to_owned(),
         TokenKind::Minus => "-".to_owned(),
         TokenKind::NewLine => "\\n".to_owned(),
-        TokenKind::Eof => "<EOF>".to_owned(),
     }
 }
 
@@ -67,10 +66,6 @@ fn render_preprocessor_lines(lines: &[LogicalLine], interner: &Interner) -> Vec<
     lines
         .iter()
         .map(|line| {
-            if matches!(line.terminator.kind, TokenKind::Eof) {
-                return "<EOF>".to_owned();
-            }
-
             line.content
                 .iter()
                 .map(|token| token_to_text(token, interner))
@@ -82,6 +77,32 @@ fn render_preprocessor_lines(lines: &[LogicalLine], interner: &Interner) -> Vec<
 
 fn render_preprocessor_output(lines: &[LogicalLine], interner: &Interner) -> String {
     render_preprocessor_lines(lines, interner).join("\n")
+}
+
+fn render_preprocessed_section(
+    section_name: &str,
+    lines: &[LogicalLine],
+    interner: &Interner,
+) -> String {
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "SECTION {section_name}\n{}",
+            render_preprocessor_output(lines, interner)
+        )
+    }
+}
+
+fn render_preprocessed_program(program: &PreprocessedProgram, interner: &Interner) -> String {
+    [
+        render_preprocessed_section("TEXT", &program.text, interner),
+        render_preprocessed_section("DATA", &program.data, interner),
+    ]
+    .into_iter()
+    .filter(|section| !section.is_empty())
+    .collect::<Vec<_>>()
+    .join("\n")
 }
 
 fn render_preprocessor_errors(errors: &[PreprocessorError]) -> String {
@@ -156,19 +177,22 @@ fn preprocesses_full_program_with_all_valid_directive_forms() {
         "STOP\n",
     );
 
-    let (lines, interner) = preprocess_ok(source);
-    let rendered = render_preprocessor_lines(&lines, &interner);
-    let rendered_output = render_preprocessor_output(&lines, &interner);
+    let (program, interner) = preprocess_ok(source);
+    let rendered_text = render_preprocessor_lines(&program.text, &interner);
+    let rendered_data = render_preprocessor_lines(&program.data, &interner);
+    let rendered_output = render_preprocessed_program(&program, &interner);
     print_preprocessor_case(
         "preprocesses_full_program_with_all_valid_directive_forms",
         source,
         &rendered_output,
     );
 
+    assert!(rendered_output.starts_with("SECTION TEXT\n"));
+    assert!(rendered_output.contains("\nSECTION DATA\n"));
+
     assert_eq!(
-        rendered,
+        rendered_text,
         vec![
-            "SECTION TEXT",
             "LOAD ZERO",
             "STORE COUNTER",
             "LOAD ONE",
@@ -192,13 +216,12 @@ fn preprocesses_full_program_with_all_valid_directive_forms() {
             "MULT COUNTER",
             "SUB COUNTER",
             "STOP",
-            "SECTION DATA",
-            "COUNTER SPACE",
-            "TMP SPACE",
-            "A SPACE",
-            "B SPACE",
-            "<EOF>",
         ]
+    );
+
+    assert_eq!(
+        rendered_data,
+        vec!["COUNTER SPACE", "TMP SPACE", "A SPACE", "B SPACE"]
     );
 }
 
@@ -249,7 +272,7 @@ fn preprocesses_full_program_and_accumulates_mixed_directive_errors() {
             PreprocessorErrorKind::InvalidDirectiveSyntax(
                 DirectiveSyntaxErrorKind::UnexpectedToken {
                     directive: DirectiveKind::MacroHeader,
-                    expected_token: TokenKind::Colon,
+                    expected: ExpectedToken::Exact(TokenKind::Colon),
                 }
             )
         )

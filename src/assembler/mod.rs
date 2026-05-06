@@ -11,9 +11,10 @@
 use crate::{
     errors::{
         DirectiveKind, DirectiveSyntaxErrorKind, EquDirectiveSemanticErrorKind,
-        EquDirectiveSyntaticErrorKind, IfDirectiveSemanticErrorKind, IfDirectiveSyntaticErrorKind,
-        InvalidArgKind, InvalidParamKind, LexerError, LexerErrorKind, MacroCallSemanticErrorKind,
-        MacroCallSyntaticErrorKind, MacroHeaderErrorKind, PreprocessorError, PreprocessorErrorKind,
+        EquDirectiveSyntaticErrorKind, ExpectedToken, IfDirectiveSemanticErrorKind,
+        IfDirectiveSyntaticErrorKind, InvalidArgKind, InvalidParamKind, LexerError, LexerErrorKind,
+        MacroCallSemanticErrorKind, MacroCallSyntaticErrorKind, MacroHeaderErrorKind,
+        PreprocessorError, PreprocessorErrorKind,
     },
     interner::Interner,
     language::KeywordTable,
@@ -133,9 +134,9 @@ impl<'a> Assembler<'a> {
                 },
                 DirectiveSyntaxErrorKind::MissingToken {
                     directive,
-                    token_missed,
+                    expected,
                 } => {
-                    let _ = *token_missed;
+                    Self::touch_expected_token(expected);
                     match directive {
                         DirectiveKind::MacroHeader
                         | DirectiveKind::MacroBody
@@ -157,9 +158,9 @@ impl<'a> Assembler<'a> {
                 },
                 DirectiveSyntaxErrorKind::UnexpectedToken {
                     directive,
-                    expected_token,
+                    expected,
                 } => {
-                    let _ = *expected_token;
+                    Self::touch_expected_token(expected);
                     match directive {
                         DirectiveKind::MacroHeader
                         | DirectiveKind::MacroBody
@@ -230,5 +231,19 @@ impl<'a> Assembler<'a> {
         }
 
         let _ = err.span;
+    }
+
+    /// Lê explicitamente os dados de expectativa sintática para diagnóstico
+    /// interno.
+    fn touch_expected_token(expected: &ExpectedToken) {
+        match expected {
+            ExpectedToken::Ident | ExpectedToken::Number => {}
+            ExpectedToken::Keyword(sym) => {
+                let _ = *sym;
+            }
+            ExpectedToken::Exact(kind) => {
+                let _ = *kind;
+            }
+        }
     }
 }

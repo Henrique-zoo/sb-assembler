@@ -1,12 +1,9 @@
-use std::{iter::Peekable, vec::IntoIter};
-
 use crate::{
     errors::{PreprocessorError, PreprocessorErrorKind},
-    lexer::{Span, TokenKind},
+    lexer::Span,
     preprocessor::{
-        Preprocessor,
+        LogicalLineIter, Preprocessor,
         ir::{Macro, MacroBodyLine, MacroHeader, NodeId},
-        types::LogicalLine,
     },
 };
 
@@ -19,12 +16,12 @@ impl Preprocessor {
     /// Durante o consumo:
     /// - linhas intermediárias são acumuladas no body da macro.
     ///
-    /// Quando o fluxo encontra `EOF` antes de `ENDMACRO`, a definição é
-    /// considerada inválida e a função retorna `UnterminatedMacro`.
+    /// Quando o iterador acaba antes de `ENDMACRO`, a definição é considerada
+    /// inválida e a função retorna `UnterminatedMacro`.
     pub(in crate::preprocessor) fn execute_macro_header(
         &mut self,
         macro_header: MacroHeader,
-        lines: &mut Peekable<IntoIter<LogicalLine>>,
+        lines: &mut LogicalLineIter,
     ) -> Result<(), PreprocessorError> {
         let body = self.collect_macro_block(macro_header.node_id, lines)?;
         self.register_macro_definition(macro_header, body)?;
@@ -51,7 +48,7 @@ impl Preprocessor {
     fn collect_macro_block(
         &mut self,
         header_node_id: NodeId,
-        lines: &mut Peekable<IntoIter<LogicalLine>>,
+        lines: &mut LogicalLineIter,
     ) -> Result<Vec<MacroBodyLine>, PreprocessorError> {
         let mut body = Vec::new();
         let mut unterminated_span = self.span_of_node(header_node_id);
@@ -60,13 +57,6 @@ impl Preprocessor {
             if self.looks_like_endmacro_line(&logical_line.content) {
                 self.parse_endmacro_line(&logical_line.content)?;
                 return Ok(body);
-            }
-
-            if matches!(logical_line.terminator.kind, TokenKind::Eof) {
-                return Err(Self::macro_definition_semantic_error(
-                    PreprocessorErrorKind::UnterminatedMacro,
-                    unterminated_span,
-                ));
             }
 
             if logical_line.content.first().is_some() {

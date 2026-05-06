@@ -40,7 +40,7 @@
 //! ## Integração com o restante do pré-processador
 //!
 //! Fluxo resumido:
-//! 1. `process_line` (orquestração) chama `looks_like_*`;
+//! 1. `process` (orquestração) chama `looks_like_*`;
 //! 2. se `true`, delega ao parser apropriado;
 //! 3. parser valida estrutura e extrai dados;
 //! 4. estágio de execução aplica efeito ou acumula erro.

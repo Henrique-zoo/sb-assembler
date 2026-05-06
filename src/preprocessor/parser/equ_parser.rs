@@ -18,8 +18,8 @@
 
 use crate::{
     errors::{
-        DirectiveKind, DirectiveSyntaxErrorKind, EquDirectiveSyntaticErrorKind, PreprocessorError,
-        PreprocessorErrorKind::InvalidEquDirectiveSyntatic,
+        DirectiveKind, DirectiveSyntaxErrorKind, EquDirectiveSyntaticErrorKind, ExpectedToken,
+        PreprocessorError, PreprocessorErrorKind::InvalidEquDirectiveSyntatic,
     },
     interner::Symbol,
     lexer::{
@@ -125,7 +125,7 @@ impl Preprocessor {
             Self::directive_sintatic_error(
                 DirectiveSyntaxErrorKind::MissingToken {
                     directive: DirectiveKind::Equ,
-                    token_missed: TokenKind::Ident(self.keywords.equ_kw),
+                    expected: ExpectedToken::Ident,
                 },
                 Span::default(),
             )
@@ -137,7 +137,7 @@ impl Preprocessor {
             Err(Self::directive_sintatic_error(
                 DirectiveSyntaxErrorKind::UnexpectedToken {
                     directive: DirectiveKind::Equ,
-                    expected_token: TokenKind::Ident(self.keywords.equ_kw),
+                    expected: ExpectedToken::Ident,
                 },
                 alias_token.span,
             ))
@@ -176,14 +176,12 @@ impl Preprocessor {
         line: &'a [Token],
         fallback_span: Span,
     ) -> Result<(Operand, &'a [Token], Span), PreprocessorError> {
-        let generic_ident = self.fixed_symbols.generic_ident;
-
         self.parse_operand(line, fallback_span)
             .map_err(|err| match err.kind {
                 super::OperandParseErrorKind::Missing => Self::directive_sintatic_error(
                     DirectiveSyntaxErrorKind::MissingToken {
                         directive: DirectiveKind::Equ,
-                        token_missed: TokenKind::Ident(generic_ident),
+                        expected: ExpectedToken::Ident,
                     },
                     err.span,
                 ),

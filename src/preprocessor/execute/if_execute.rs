@@ -11,14 +11,12 @@
 //! - o parser (`parser/if_parser.rs`) valida forma;
 //! - este módulo resolve significado semântico da condição (`Number`/`Ident`).
 
-use std::{iter::Peekable, vec::IntoIter};
-
 use crate::{
     errors::{IfDirectiveSemanticErrorKind, PreprocessorError, PreprocessorErrorKind},
     interner::Interner,
     lexer::{Span, Token, TokenKind},
     preprocessor::{
-        LogicalLine, NumberParseError, Preprocessor,
+        LogicalLineIter, NumberParseError, Preprocessor,
         ir::{IfDecl, Number, Operand},
         parse_signed_number, parse_unsigned_number,
         types::EquValue,
@@ -57,7 +55,7 @@ impl Preprocessor {
     pub(in crate::preprocessor) fn execute_if_directive(
         &self,
         if_decl: IfDecl,
-        lines: &mut Peekable<IntoIter<LogicalLine>>,
+        lines: &mut LogicalLineIter,
         interner: &Interner,
     ) -> Result<Option<Vec<Token>>, PreprocessorError> {
         let mut output = None;
@@ -68,13 +66,6 @@ impl Preprocessor {
                 self.span_of_node(if_decl.node_id),
             )
         })?;
-
-        if matches!(&next_line.terminator.kind, TokenKind::Eof) {
-            return Err(Self::if_directive_semantic_error(
-                IfDirectiveSemanticErrorKind::MissingNextLine,
-                self.span_of_node(if_decl.node_id),
-            ));
-        }
 
         if self.resolve_condition(&if_decl.cond, interner)? {
             output = Some(next_line.content);

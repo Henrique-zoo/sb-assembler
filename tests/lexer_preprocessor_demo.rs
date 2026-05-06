@@ -16,7 +16,7 @@ mod preprocessor;
 use interner::Interner;
 use language::KeywordTable;
 use lexer::{Lexer, Token, TokenKind};
-use preprocessor::{LogicalLine, Preprocessor};
+use preprocessor::{LogicalLine, PreprocessedProgram, Preprocessor};
 
 fn token_to_text(token: &Token, interner: &Interner) -> String {
     match token.kind {
@@ -30,7 +30,6 @@ fn token_to_text(token: &Token, interner: &Interner) -> String {
         TokenKind::Plus => "+".to_owned(),
         TokenKind::Minus => "-".to_owned(),
         TokenKind::NewLine => "\\n".to_owned(),
-        TokenKind::Eof => "<EOF>".to_owned(),
     }
 }
 
@@ -44,14 +43,6 @@ fn render_lexer_output(tokens: &[Token], interner: &Interner) -> String {
                 out.push_str(&current_line.join(" "));
                 out.push('\n');
                 current_line.clear();
-            }
-            TokenKind::Eof => {
-                if !current_line.is_empty() {
-                    out.push_str(&current_line.join(" "));
-                    out.push('\n');
-                    current_line.clear();
-                }
-                out.push_str("<EOF>");
             }
             _ => current_line.push(token_to_text(token, interner)),
         }
@@ -79,12 +70,37 @@ fn render_preprocessor_output(lines: &[LogicalLine], interner: &Interner) -> Str
 
         match line.terminator.kind {
             TokenKind::NewLine => out.push('\n'),
-            TokenKind::Eof => out.push_str("<EOF>"),
             _ => {}
         }
     }
 
     out
+}
+
+fn render_preprocessed_section(
+    section_name: &str,
+    lines: &[LogicalLine],
+    interner: &Interner,
+) -> String {
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "SECTION {section_name}\n{}",
+            render_preprocessor_output(lines, interner)
+        )
+    }
+}
+
+fn render_preprocessed_output(program: &PreprocessedProgram, interner: &Interner) -> String {
+    [
+        render_preprocessed_section("TEXT", &program.text, interner),
+        render_preprocessed_section("DATA", &program.data, interner),
+    ]
+    .into_iter()
+    .filter(|section| !section.is_empty())
+    .collect::<Vec<_>>()
+    .join("")
 }
 
 #[test]
@@ -141,9 +157,17 @@ CLEAR AUX
         .process(tokens, &mut interner)
         .expect("preprocessor falhou no cenário de teste");
 
-    let preprocessor_output = render_preprocessor_output(&preprocessed, &interner);
+    let preprocessor_output = render_preprocessed_output(&preprocessed, &interner);
     println!("===== PREPROCESSOR OUTPUT =====\n{preprocessor_output}");
 
+    assert!(
+        preprocessor_output.starts_with("SECTION TEXT\n"),
+        "output do preprocessor deve identificar a seção TEXT"
+    );
+    assert!(
+        preprocessor_output.contains("SECTION DATA\n"),
+        "output do preprocessor deve identificar a seção DATA"
+    );
     assert!(
         preprocessor_output.contains("LOAD AUX"),
         "macro ACCUM não expandiu corretamente"
@@ -172,7 +196,7 @@ CLEAR AUX
         "seção DATA não foi preservada no output"
     );
     assert!(
-        preprocessor_output.ends_with("<EOF>"),
-        "output do preprocessor deve terminar com <EOF>"
+        preprocessor_output.ends_with('\n'),
+        "output do preprocessor deve preservar a quebra final"
     );
 }

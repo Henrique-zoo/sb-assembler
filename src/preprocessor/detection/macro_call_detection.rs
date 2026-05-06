@@ -1,6 +1,6 @@
 use crate::{
-    lexer::Token,
-    preprocessor::{Preprocessor, TokenKind},
+    lexer::{Token, TokenKind},
+    preprocessor::Preprocessor,
 };
 
 impl Preprocessor {
