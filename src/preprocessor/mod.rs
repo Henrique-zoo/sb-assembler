@@ -16,27 +16,56 @@
 mod detection;
 mod execute;
 mod ir;
+mod number;
 mod parser;
 mod types;
 
-pub(crate) use types::{Keywords, Preprocessor};
+pub(in crate::preprocessor) use number::{
+    NumberParseError, parse_signed_number, parse_unsigned_number,
+};
+pub(crate) use types::{Keywords, LogicalLine, Preprocessor};
 
 use std::{collections::HashMap, iter::Peekable, vec::IntoIter};
 
 use crate::{
-    errors::PreprocessorError,
+    errors::{PreprocessorError, PreprocessorErrorKind},
     interner::Interner,
-    lexer::{Token, TokenKind},
-    preprocessor::types::{FixedSymbols, LogicalLine, Section},
+    language::KeywordTable,
+    lexer::{Span, Token, TokenKind},
+    preprocessor::{
+        ir::NodeId,
+        types::{FixedSymbols, Section},
+    },
 };
 
 /// Efeitos produzidos pelo processamento de uma única linha lógica.
 struct LineProcessResult {
-    output: Vec<Token>,
+    output: Vec<LogicalLine>,
     errors: Vec<PreprocessorError>,
 }
 
 impl Preprocessor {
+    /// Registra um nó da IR e retorna seu `NodeId`.
+    ///
+    /// O `NodeId` é estável durante todo o processamento e pode ser usado para
+    /// recuperar o `Span` com [`Self::span_of_node`].
+    fn alloc_node_id(&mut self, span: Span) -> NodeId {
+        let id = NodeId(self.node_spans.len() as u32);
+        self.node_spans.push(span);
+        id
+    }
+
+    /// Resolve o `Span` associado a um `NodeId`.
+    ///
+    /// Retorna `Span::default()` se o `NodeId` estiver fora dos limites da
+    /// tabela (fallback defensivo).
+    fn span_of_node(&self, node_id: NodeId) -> Span {
+        self.node_spans
+            .get(node_id.0 as usize)
+            .copied()
+            .unwrap_or_default()
+    }
+
     /// Cria uma instância de `Preprocessor` pronta para uso.
     ///
     /// A construção inicializa a seção atual como `Section::None`, cria tabelas
@@ -46,9 +75,10 @@ impl Preprocessor {
     /// # Exemplo
     /// ```rust,ignore
     /// let mut interner = Interner::new();
-    /// let preprocessor = Preprocessor::new(&mut interner);
+    /// let keywords = KeywordTable::new(&mut interner);
+    /// let preprocessor = Preprocessor::new(&mut interner, keywords);
     /// ```
-    pub fn new(interner: &mut Interner) -> Self {
+    pub fn new(interner: &mut Interner, keyword_table: KeywordTable) -> Self {
         let keywords = Keywords {
             section_kw: interner.entry("SECTION").or_insert(),
             text_kw: interner.entry("TEXT").or_insert(),
@@ -65,6 +95,8 @@ impl Preprocessor {
             colon: interner.entry(":").or_insert(),
             plus: interner.entry("+").or_insert(),
             minus: interner.entry("-").or_insert(),
+            generic_ident: interner.entry("A").or_insert(),
+            generic_number: interner.entry("10").or_insert(),
         };
 
         Self {
@@ -72,7 +104,9 @@ impl Preprocessor {
             equs: HashMap::new(),
             current_section: Section::None,
             keywords,
+            keyword_table,
             fixed_symbols,
+            node_spans: Vec::new(),
         }
     }
 
@@ -93,7 +127,8 @@ impl Preprocessor {
     /// # Exemplo
     /// ```rust,ignore
     /// let mut interner = Interner::new();
-    /// let mut preprocessor = Preprocessor::new(&mut interner);
+    /// let keywords = KeywordTable::new(&mut interner);
+    /// let mut preprocessor = Preprocessor::new(&mut interner, keywords);
     ///
     /// let add = interner.entry("ADD").or_insert();
     /// let tokens = vec![
@@ -109,15 +144,35 @@ impl Preprocessor {
         &mut self,
         tokens: Vec<Token>,
         interner: &mut Interner,
-    ) -> Result<Vec<Token>, Vec<PreprocessorError>> {
+    ) -> Result<Vec<LogicalLine>, Vec<PreprocessorError>> {
         let mut output = Vec::new();
+        let mut cod_lines = Vec::new();
+        let mut data_lines = Vec::new();
+        let mut eof_line = None;
         let mut errors = Vec::new();
         let mut lines = Self::collect_logical_lines(tokens).into_iter().peekable();
 
         while let Some(logical_line) = lines.next() {
             let line_result = self.process_line(logical_line, &mut lines, interner);
-            output.extend(line_result.output);
+            for emitted_line in line_result.output {
+                if matches!(emitted_line.terminator.kind, TokenKind::Eof) {
+                    eof_line = Some(emitted_line);
+                    continue;
+                }
+
+                match self.current_section {
+                    Section::None => output.push(emitted_line),
+                    Section::Data => data_lines.push(emitted_line),
+                    Section::Text => cod_lines.push(emitted_line),
+                }
+            }
             errors.extend(line_result.errors);
+        }
+
+        output.extend(cod_lines);
+        output.extend(data_lines);
+        if let Some(eof_line) = eof_line {
+            output.push(eof_line);
         }
 
         if errors.is_empty() {
@@ -131,6 +186,15 @@ impl Preprocessor {
     ///
     /// A função usa os detectores `looks_like_*` como triagem rápida e delega a
     /// validação/aplicação da diretiva para as rotinas correspondentes.
+    ///
+    /// Despacho por seção:
+    /// - `SECTION TEXT`/`SECTION DATA` são tratados antes de qualquer outro
+    ///   fluxo para permitir troca de contexto;
+    /// - em `Section::None`, apenas tentativas de `MACRO` e `EQU` são
+    ///   reconhecidas;
+    /// - em `Section::Text`, apenas tentativas de `IF` e `macro call` são
+    ///   reconhecidas;
+    /// - em `Section::Data`, linhas são apenas repassadas para o output.
     ///
     /// Para definição de macro, `execute_macro_header` recebe o iterador de
     /// linhas e consome o bloco até `ENDMACRO`.
@@ -155,80 +219,126 @@ impl Preprocessor {
         let line = logical_line.content.as_slice();
         let terminator = logical_line.terminator;
 
-        if line.is_empty() {
-            output.push(terminator);
-            return LineProcessResult { output, errors };
-        }
-
-        if self.looks_like_macro_header(line) {
-            output.push(terminator);
-
-            let Some(macro_header) = self
-                .parse_macro_header(line)
-                .map_err(|err| errors.push(err))
-                .ok()
-            else {
-                return LineProcessResult { output, errors };
-            };
-
-            if let Err(err) = self.execute_macro_header(macro_header, lines, &mut output) {
-                errors.push(err);
-            }
-            return LineProcessResult { output, errors };
-        }
-
-        if self.looks_like_equ_line(line) {
-            if let Err(err) = self.process_equ(line) {
-                errors.push(err);
-            }
-            output.push(terminator);
-            return LineProcessResult { output, errors };
-        }
-
-        if self.looks_like_if_line(line) {
-            if let Err(err) = self.process_if(line, &mut output) {
-                errors.push(err);
-            }
-            output.push(terminator);
-            return LineProcessResult { output, errors };
-        }
-
-        if self.looks_like_text_line(line) {
-            match self.parse_text_line(line) {
+        if self.looks_like_text_section_line(line) {
+            match self.parse_text_section_line(line) {
                 Ok(section_decl) => {
-                    self.current_section = section_decl.section;
+                    output.extend(self.execute_section_directive(section_decl, line, terminator))
                 }
-                Err(err) => {
-                    errors.push(err);
-                }
+                Err(err) => errors.push(err),
             }
-            output.push(terminator);
             return LineProcessResult { output, errors };
         }
 
-        if self.looks_like_data_line(line) {
-            match self.parse_data_line(line) {
+        if self.looks_like_data_section_line(line) {
+            match self.parse_data_section_line(line) {
                 Ok(section_decl) => {
-                    self.current_section = section_decl.section;
+                    output.extend(self.execute_section_directive(section_decl, line, terminator))
                 }
-                Err(err) => {
-                    errors.push(err);
-                }
+                Err(err) => errors.push(err),
             }
-            output.push(terminator);
             return LineProcessResult { output, errors };
         }
 
-        if let Some(expanded) = self.expand_macro_call(line, interner, &mut errors) {
-            for expanded_line in expanded {
-                output.extend(expanded_line);
-            }
-            output.push(terminator);
+        if matches!(self.current_section, Section::Data) {
+            output.push(LogicalLine {
+                content: line.to_vec(),
+                terminator,
+            });
             return LineProcessResult { output, errors };
         }
 
-        output.extend_from_slice(line);
-        output.push(terminator);
+        match self.current_section {
+            Section::None => {
+                if self.looks_like_macro_header(line) {
+                    let Some(macro_header) = self
+                        .parse_macro_header(line)
+                        .map_err(|err| errors.push(err))
+                        .ok()
+                    else {
+                        return LineProcessResult { output, errors };
+                    };
+
+                    match self.execute_macro_header(macro_header, lines) {
+                        Ok(()) => {}
+                        Err(err) => errors.push(err),
+                    }
+                    return LineProcessResult { output, errors };
+                }
+
+                if self.looks_like_equ_line(line) {
+                    let Some(equ_decl) = self
+                        .parse_equ_line(line)
+                        .map_err(|err| errors.push(err))
+                        .ok()
+                    else {
+                        return LineProcessResult { output, errors };
+                    };
+
+                    if let Err(err) = self.execute_equ_directive(equ_decl, interner) {
+                        errors.push(err);
+                    }
+                    return LineProcessResult { output, errors };
+                }
+            }
+            Section::Text => {
+                if self.looks_like_if_line(line) {
+                    let Some(if_decl) = self
+                        .parse_if_line(line)
+                        .map_err(|err| errors.push(err))
+                        .ok()
+                    else {
+                        return LineProcessResult { output, errors };
+                    };
+
+                    match self.execute_if_directive(if_decl, lines, interner) {
+                        Ok(Some(emitted_tokens)) => output.push(LogicalLine {
+                            content: emitted_tokens,
+                            terminator,
+                        }),
+                        Ok(None) => {}
+                        Err(err) => errors.push(err),
+                    }
+                    return LineProcessResult { output, errors };
+                }
+
+                if self.looks_like_endmacro_line(line) {
+                    errors.push(PreprocessorError {
+                        kind: PreprocessorErrorKind::UnexpectedEndMacro,
+                        span: line[0].span,
+                    })
+                }
+
+                if self.looks_like_macro_call(line) {
+                    match self.parse_macro_call(line) {
+                        Ok(macro_call) => match self.execute_macro_call(macro_call) {
+                            Ok(mut expanded_lines) => {
+                                if let Some(last_line) = expanded_lines.last_mut() {
+                                    last_line.terminator = terminator;
+                                } else {
+                                    expanded_lines.push(LogicalLine {
+                                        content: Vec::new(),
+                                        terminator,
+                                    });
+                                }
+
+                                output.extend(expanded_lines);
+                                return LineProcessResult { output, errors };
+                            }
+                            Err(err) => errors.push(err),
+                        },
+                        Err(err) => {
+                            errors.push(err);
+                        }
+                    }
+                }
+            }
+            Section::Data => {}
+        }
+
+        output.push(LogicalLine {
+            content: line.to_vec(),
+            terminator,
+        });
         LineProcessResult { output, errors }
     }
 
@@ -238,6 +348,12 @@ impl Preprocessor {
     /// Nesse ponto:
     /// - `content` recebe os tokens acumulados antes do terminador;
     /// - `terminator` guarda o separador original da linha.
+    ///
+    /// Convenção de fronteira final:
+    /// - se o arquivo termina sem `\n` após a última linha de conteúdo, a
+    ///   função cria um `NewLine` sintético como terminador dessa linha;
+    /// - `Eof` é sempre materializado como uma linha lógica própria
+    ///   (`content` vazio, `terminator = Eof`).
     ///
     /// Preservar o `terminator` permite que as próximas etapas processem por
     /// linha sem perder a estrutura original do fonte (linhas vazias,
@@ -255,16 +371,31 @@ impl Preprocessor {
         let mut current_line = Vec::new();
 
         for token in tokens {
-            if matches!(&token.kind, TokenKind::NewLine | TokenKind::Eof) {
-                lines.push(LogicalLine {
+            match &token.kind {
+                TokenKind::NewLine => lines.push(LogicalLine {
                     content: std::mem::take(&mut current_line),
                     terminator: token,
-                });
-            } else {
-                current_line.push(token);
+                }),
+                TokenKind::Eof => {
+                    if !current_line.is_empty() {
+                        lines.push(LogicalLine {
+                            content: std::mem::take(&mut current_line),
+                            terminator: Token::new(TokenKind::NewLine, Span::default()),
+                        });
+                    }
+                    lines.push(LogicalLine {
+                        content: vec![],
+                        terminator: token,
+                    })
+                }
+                _ => current_line.push(token),
             }
         }
 
         lines
     }
 }
+
+#[cfg(test)]
+#[path = "tests.rs"]
+mod tests;

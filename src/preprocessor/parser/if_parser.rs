@@ -1,9 +1,9 @@
 use crate::{
     errors::{
-        DirectiveKind, IfDirectiveErrorKind, PreprocessorError,
-        PreprocessorErrorKind::InvalidIfDirective,
+        DirectiveKind, IfDirectiveSyntaticErrorKind, PreprocessorError,
+        PreprocessorErrorKind::InvalidIfDirectiveSyntatic,
     },
-    lexer::{Span, Token, TokenKind},
+    lexer::{Span, Token},
     preprocessor::{
         Preprocessor,
         ir::{IfDecl, Operand},
@@ -25,7 +25,7 @@ impl Preprocessor {
     ///    [`Self::ensure_no_trailing_tokens`].
     ///
     /// Retorno:
-    /// - `Ok(IfDecl { cond, span })` quando a linha é sintaticamente válida.
+    /// - `Ok(IfDecl { node_id, cond })` quando a linha é sintaticamente válida.
     ///
     /// Erros:
     /// - propaga falhas de qualquer etapa do pipeline (keyword ausente/
@@ -34,7 +34,7 @@ impl Preprocessor {
     /// Efeito colateral:
     /// - nenhum. A função apenas valida e extrai estrutura para IR.
     pub(in crate::preprocessor) fn parse_if_line(
-        &self,
+        &mut self,
         line: &[Token],
     ) -> Result<IfDecl, PreprocessorError> {
         let (tail, fallback_span) = self.consume_keyword(
@@ -47,10 +47,11 @@ impl Preprocessor {
 
         self.ensure_no_trailing_tokens(tail, DirectiveKind::If)?;
         let span = self.consumed_prefix_span(line, tail, fallback_span);
+        let node_id = self.alloc_node_id(span);
 
         Ok(IfDecl {
+            node_id,
             cond: operand,
-            span,
         })
     }
 
@@ -58,7 +59,9 @@ impl Preprocessor {
     ///
     /// Formas aceitas:
     /// - `IF <Number>`;
-    /// - `IF <Ident>`.
+    /// - `IF <Ident>`;
+    /// - `IF +<Number>`;
+    /// - `IF -<Number>`.
     ///
     /// Parâmetros:
     /// - `line`: sufixo após `IF`;
@@ -71,39 +74,42 @@ impl Preprocessor {
     ///   - `cond_span` aponta para o token da condição.
     ///
     /// Erros:
-    /// - `InvalidIfDirective(MissingCondition)` quando não há token de condição;
-    /// - `InvalidIfDirective(InvalidConditionType)` quando o token da condição
-    ///   não é `Number` nem `Ident`.
+    /// - `InvalidIfDirectiveSyntatic(MissingCondition)` quando não há token de
+    ///   condição;
+    /// - `InvalidIfDirectiveSyntatic(InvalidConditionType)` quando o token da
+    ///   condição não é `Number`, `Ident`, `+Number` ou `-Number`.
     ///
     /// Efeito colateral:
     /// - nenhum.
     fn parse_if_condition<'a>(
-        &self,
+        &mut self,
         line: &'a [Token],
         fallback_span: Span,
     ) -> Result<(Operand, &'a [Token], Span), PreprocessorError> {
-        let (cond_token, tail) = line.split_first().ok_or_else(|| {
-            Self::if_directive_error(IfDirectiveErrorKind::MissingCondition, fallback_span)
-        })?;
-
-        match cond_token.kind {
-            TokenKind::Number(sym) => Ok((Operand::Number(sym), tail, cond_token.span)),
-            TokenKind::Ident(sym) => Ok((Operand::Ident(sym), tail, cond_token.span)),
-            _ => Err(Self::if_directive_error(
-                IfDirectiveErrorKind::InvalidConditionType,
-                cond_token.span,
-            )),
-        }
+        self.parse_operand(line, fallback_span)
+            .map_err(|err| match err.kind {
+                super::OperandParseErrorKind::Missing => Self::if_directive_sintatic_error(
+                    IfDirectiveSyntaticErrorKind::MissingCondition,
+                    err.span,
+                ),
+                super::OperandParseErrorKind::InvalidType => Self::if_directive_sintatic_error(
+                    IfDirectiveSyntaticErrorKind::InvalidConditionType,
+                    err.span,
+                ),
+            })
     }
 
     /// Constrói erro específico de diretiva `IF` já envelopado em
-    /// [`crate::errors::PreprocessorErrorKind::InvalidIfDirective`].
+    /// [`crate::errors::PreprocessorErrorKind::InvalidIfDirectiveSyntatic`].
     ///
     /// Este helper centraliza o boilerplate de criação de erros da família `IF`,
     /// preservando o `span` informado pelo chamador.
-    fn if_directive_error(kind: IfDirectiveErrorKind, span: Span) -> PreprocessorError {
+    fn if_directive_sintatic_error(
+        kind: IfDirectiveSyntaticErrorKind,
+        span: Span,
+    ) -> PreprocessorError {
         PreprocessorError {
-            kind: InvalidIfDirective(kind),
+            kind: InvalidIfDirectiveSyntatic(kind),
             span,
         }
     }

@@ -57,13 +57,10 @@
 //! - `section_detection`: `SECTION TEXT` e `SECTION DATA`.
 //!
 //! Além disso, este módulo separa fluxos específicos de macro:
-//! - `macro_body_detection`: tentativas relacionadas ao corpo da macro
-//!   (linhas internas e encerramento);
 //! - `macro_call_detection`: tentativas de chamada de macro.
 
 mod equ_detection;
 mod if_detection;
-mod macro_body_detection;
 mod macro_call_detection;
 mod macro_detection;
 mod section_detection;

@@ -7,7 +7,10 @@
 //! - erros semânticos de diretivas e uso de macros;
 //! - o envelope final com `Span` ([`PreprocessorError`]).
 
-use crate::{interner::Symbol, lexer::Span};
+use crate::{
+    interner::Symbol,
+    lexer::{Span, TokenKind},
+};
 
 /// Subcategoria de erro para parâmetros formais em cabeçalho de macro.
 #[derive(Debug, Clone)]
@@ -32,8 +35,6 @@ pub(crate) enum InvalidArgKind {
 /// Erros sintáticos específicos de cabeçalho `MACRO`.
 #[derive(Debug, Clone)]
 pub(crate) enum MacroHeaderErrorKind {
-    /// `:` obrigatório ausente após o rótulo.
-    MissingColon,
     /// Label inicial inválida.
     InvalidLabel,
     /// Erro dentro da lista de parâmetros formais.
@@ -41,42 +42,68 @@ pub(crate) enum MacroHeaderErrorKind {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum MacroCallErrorKind {
-    /// Chamada de Macro não definida.
-    UndefinedMacro,
-    /// Chamada de Macro com menos argumentos do que o necessário.
-    MissingArguments,
+pub(crate) enum MacroCallSyntaticErrorKind {
     /// Erro dentro da lista de argumentos.
     InvalidArg(InvalidArgKind),
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum MacroCallSemanticErrorKind {
+    /// Chamada de Macro não definida.
+    UndefinedMacro,
+    /// Chamada de Macro com menos argumentos do que o necessário.
+    MissingArguments,
+    /// Quantidade de argumentos em chamada diverge da definição.
+    WrongArgCount { expected: usize, found: usize },
+}
+
 /// Erros sintáticos específicos da diretiva `IF`
 #[derive(Debug, Clone)]
-pub(crate) enum IfDirectiveErrorKind {
+pub(crate) enum IfDirectiveSyntaticErrorKind {
     /// Condição ausente após palavra-chave `IF`
     MissingCondition,
     /// Token de condição de tipo inválido
     InvalidConditionType,
 }
 
+/// Erros semânticos específicos da diretiva `IF`.
+#[derive(Debug, Clone)]
+pub(crate) enum IfDirectiveSemanticErrorKind {
+    /// Número associado à condição é grande demais para a arquitetura de 16 bits.
+    ConditionNumberOverflow { value: Symbol },
+    /// Literal numérico da condição não pôde ser parseado.
+    InvalidConditionNumber { value: Symbol },
+    /// Identificador da condição não foi definido.
+    UndefinedIdentifier { ident: TokenKind },
+    /// Identificador tem valor inválido.
+    InvalidConditionIdentifier { ident: TokenKind, value: Symbol },
+    /// Linha seguinte não existe
+    MissingNextLine,
+}
+
 /// Erros sintáticos específicos da diretiva `EQU`
 #[derive(Debug, Clone)]
-pub(crate) enum EquDirectiveErrorKind {
+pub(crate) enum EquDirectiveSyntaticErrorKind {
     /// Token do valor que o `EQU` atribui de tipo inválido
     InvalidValueType,
 }
 
-/// Erros sintáticos específicos de declaração de seções
+/// Erros semânticos específicos da diretiva `EQU`.
 #[derive(Debug, Clone)]
-pub(crate) enum SectionDeclarationErrorKind {
-    /// Keyword `Section` obrigatória ausente
-    MissingSectionKeyword,
+pub(crate) enum EquDirectiveSemanticErrorKind {
+    /// Valor semântico inválido para a regra da diretiva.
+    InvalidValue,
+    /// Literal numérico do valor não pôde ser parseado.
+    InvalidValueNumber { value: Symbol },
+    /// Número associado ao valor estoura o intervalo de 16 bits.
+    ValueNumberOverflow { value: Symbol },
 }
 
 /// Diretiva alvo associada a um erro sintático genérico.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum DirectiveKind {
     MacroHeader,
+    MacroBody,
     EndMacro,
     Equ,
     If,
@@ -92,14 +119,14 @@ pub(crate) enum DirectiveSyntaxErrorKind {
     /// Token faltando para a gramática daquela diretiva (na prática, é unreachable)
     MissingToken {
         directive: DirectiveKind,
-        token_missed: Option<Symbol>,
+        token_missed: TokenKind,
     },
     /// Declaração inválida - Erro de fallback para tratar casos supostamente unreacheable
     InvalidDeclaration { directive: DirectiveKind },
     /// Token inesperado para a gramática daquela diretiva
     UnexpectedToken {
         directive: DirectiveKind,
-        expected_token: Symbol,
+        expected_token: TokenKind,
     },
     /// Token inesperado específico para a gramática daquela diretiva - trato erros de sintaxe "clássicos" para melhorar a mensagem de erro
     ForbiddenToken { directive: DirectiveKind },
@@ -116,22 +143,22 @@ pub(crate) enum PreprocessorErrorKind {
     UnterminatedMacro,
     /// Nova definição para macro já existente.
     MacroAlreadyDefined(Symbol),
-    /// Quantidade de argumentos em chamada diverge da definição.
-    WrongArgCount { expected: usize, found: usize },
     /// Cabeçalho de macro malformado.
     InvalidMacroHeader(MacroHeaderErrorKind),
-    /// Chamada para macro inválida
-    InvalidMacroCall(MacroCallErrorKind),
-    /// Diretiva IF inválida
-    InvalidIfDirective(IfDirectiveErrorKind),
-    /// Diretiva EQU inválida
-    InvalidEquDirective(EquDirectiveErrorKind),
-    /// Declaração de Seção inválida
-    InvalidSectionDeclaration(SectionDeclarationErrorKind),
+    /// Chamada de macro com erro sintático.
+    InvalidMacroCallSyntatic(MacroCallSyntaticErrorKind),
+    /// Chamada de macro com erro semântico.
+    InvalidMacroCallSemantic(MacroCallSemanticErrorKind),
+    /// Diretiva IF com erro sintático.
+    InvalidIfDirectiveSyntatic(IfDirectiveSyntaticErrorKind),
+    /// Diretiva IF com erro semântico.
+    InvalidIfDirectiveSemantic(IfDirectiveSemanticErrorKind),
+    /// Diretiva EQU com erro sintático.
+    InvalidEquDirectiveSyntatic(EquDirectiveSyntaticErrorKind),
+    /// Diretiva EQU com erro semântico.
+    InvalidEquDirectiveSemantic(EquDirectiveSemanticErrorKind),
     /// Erro sintático genérico de diretiva.
     InvalidDirectiveSyntax(DirectiveSyntaxErrorKind),
-    /// Diretiva inválida ou malformada.
-    InvalidDirective,
 }
 
 /// Diagnóstico final emitido pelo pré-processador.

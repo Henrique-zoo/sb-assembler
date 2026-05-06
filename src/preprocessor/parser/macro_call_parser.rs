@@ -1,11 +1,14 @@
 use crate::{
     errors::{
-        DirectiveKind, DirectiveSyntaxErrorKind, InvalidArgKind, MacroCallErrorKind,
+        DirectiveKind, DirectiveSyntaxErrorKind, InvalidArgKind, MacroCallSyntaticErrorKind,
         PreprocessorError, PreprocessorErrorKind,
     },
     interner::Symbol,
     lexer::{Span, Token, TokenKind},
-    preprocessor::{Preprocessor, ir::MacroCall},
+    preprocessor::{
+        Preprocessor,
+        ir::{MacroCall, MacroCallArg, Sign},
+    },
 };
 
 impl Preprocessor {
@@ -15,16 +18,17 @@ impl Preprocessor {
     /// ```ignore
     /// <MacroName>
     /// <MacroName> <Arg1>, <Arg2>, ...
+    /// <MacroName> <Arg1>, +<Arg2>, -<Arg3>, ...
     /// ```
     ///
     /// Fluxo interno:
     /// 1. extrai o nome com [`Self::parse_macro_name`];
-    /// 2. parseia argumentos posicionais com [`Self::parse_macro_args`];
+    /// 2. parseia argumentos posicionais com [`Self::parse_macro_call_args`];
     /// 3. consolida o `span` da linha inteira com
     ///    [`Self::consumed_whole_line_span`].
     ///
     /// Retorno:
-    /// - `Ok(MacroCall { name, args, span })` quando a linha é uma chamada
+    /// - `Ok(MacroCall { node_id, name, args })` quando a linha é uma chamada
     ///   sintaticamente válida.
     ///
     /// Erros:
@@ -42,17 +46,18 @@ impl Preprocessor {
     /// // ROT R1, R2
     /// ```
     pub(in crate::preprocessor) fn parse_macro_call(
-        &self,
+        &mut self,
         line: &[Token],
     ) -> Result<MacroCall, PreprocessorError> {
         let (macro_name, tail, fallback_span) = self.parse_macro_name(line)?;
-        let macro_args = self.parse_macro_args(tail)?;
+        let macro_args = self.parse_macro_call_args(tail)?;
         let span = self.consumed_whole_line_span(line, fallback_span);
+        let node_id = self.alloc_node_id(span);
 
         Ok(MacroCall {
+            node_id,
             name: macro_name,
             args: macro_args,
-            span,
         })
     }
 
@@ -84,10 +89,10 @@ impl Preprocessor {
         line: &'a [Token],
     ) -> Result<(Symbol, &'a [Token], Span), PreprocessorError> {
         let (macro_name_token, tail) = line.split_first().ok_or_else(|| {
-            Self::directive_syntax_error(
+            Self::directive_sintatic_error(
                 DirectiveSyntaxErrorKind::MissingToken {
                     directive: DirectiveKind::MacroCall,
-                    token_missed: None,
+                    token_missed: TokenKind::Ident(self.fixed_symbols.generic_ident),
                 },
                 Span::default(),
             )
@@ -95,7 +100,7 @@ impl Preprocessor {
 
         match macro_name_token.kind {
             TokenKind::Ident(name) => Ok((name, tail, macro_name_token.span)),
-            _ => Err(Self::directive_syntax_error(
+            _ => Err(Self::directive_sintatic_error(
                 DirectiveSyntaxErrorKind::InvalidDeclaration {
                     directive: DirectiveKind::MacroCall,
                 },
@@ -114,124 +119,167 @@ impl Preprocessor {
     /// ```
     ///
     /// Regras sintáticas:
-    /// - cada argumento deve ser `Ident` ou `Number`;
+    /// - cada argumento deve ser `Ident`, `Number`, `+Number` ou `-Number`;
     /// - entre argumentos deve existir `,`;
     /// - não é permitida vírgula final sem argumento seguinte.
-    ///
-    /// Estratégia:
-    /// - usa `try_fold` com uma máquina de estados pequena:
-    ///   - `ExpectArgIdent`: espera argumento;
-    ///   - `ExpectCommaOrEnd`: espera `,` ou fim da lista.
     ///
     /// Parâmetros:
     /// - `line`: sufixo após o nome da macro.
     ///
     /// Retorno:
-    /// - `Ok(Vec<Symbol>)` com os argumentos na ordem declarada;
+    /// - `Ok(Vec<MacroCallArg>)` com os argumentos na ordem declarada;
     /// - `Ok(vec![])` quando não há argumentos.
     ///
     /// Erros:
-    /// - `InvalidMacroCall(InvalidArg(InvalidArgIdent))` quando um argumento
-    ///   não é `Ident` nem `Number`;
+    /// - `InvalidMacroCallSyntatic(InvalidArg(InvalidArgIdent))` quando um argumento
+    ///   não é `Ident`, `Number`, `+Number` ou `-Number`;
     /// - `InvalidDirectiveSyntax(UnexpectedToken { directive: MacroCall, .. })`
     ///   quando o separador entre argumentos não é vírgula;
-    /// - `InvalidMacroCall(InvalidArg(UnexpectedComma))` para vírgula final.
+    /// - `InvalidMacroCallSyntatic(InvalidArg(UnexpectedComma))` para vírgula final.
     ///
     /// Efeito colateral:
     /// - nenhum.
-    fn parse_macro_args(&self, line: &[Token]) -> Result<Vec<Symbol>, PreprocessorError> {
+    fn parse_macro_call_args(
+        &mut self,
+        line: &[Token],
+    ) -> Result<Vec<MacroCallArg>, PreprocessorError> {
         if line.is_empty() {
             return Ok(Vec::new());
         }
 
-        #[derive(Clone, Copy)]
-        enum ParseState {
-            ExpectArgIdent,
-            ExpectCommaOrEnd,
-        }
+        let mut args = Vec::new();
+        let mut tail = line;
 
-        let (args, state, last_span) = line.iter().try_fold(
-            (Vec::new(), ParseState::ExpectArgIdent, Span::default()),
-            |(mut args, state, _), token| {
-                let next_state = match state {
-                    ParseState::ExpectArgIdent => {
-                        args.push(self.parse_macro_call_arg(token)?);
-                        ParseState::ExpectCommaOrEnd
-                    }
-                    ParseState::ExpectCommaOrEnd => {
-                        if matches!(&token.kind, TokenKind::Comma) {
-                            ParseState::ExpectArgIdent
-                        } else {
-                            return Err(Self::directive_syntax_error(
-                                DirectiveSyntaxErrorKind::UnexpectedToken {
-                                    directive: DirectiveKind::MacroCall,
-                                    expected_token: self.fixed_symbols.comma,
-                                },
-                                token.span,
-                            ));
-                        }
-                    }
-                };
+        loop {
+            let (arg, rest) = self.parse_macro_call_arg(tail)?;
+            args.push(arg);
 
-                Ok((args, next_state, token.span))
-            },
-        )?;
+            if rest.is_empty() {
+                return Ok(args);
+            }
 
-        match state {
-            ParseState::ExpectArgIdent => Err(Self::invalid_arg_error(
-                InvalidArgKind::UnexpectedComma,
-                last_span,
-            )),
-            ParseState::ExpectCommaOrEnd => Ok(args),
+            let (comma, rest) = rest.split_first().unwrap_or_else(|| unreachable!());
+            if !matches!(comma.kind, TokenKind::Comma) {
+                return Err(Self::directive_sintatic_error(
+                    DirectiveSyntaxErrorKind::UnexpectedToken {
+                        directive: DirectiveKind::MacroCall,
+                        expected_token: TokenKind::Comma,
+                    },
+                    comma.span,
+                ));
+            }
+
+            if rest.is_empty() {
+                return Err(Self::invalid_arg_sintatic_error(
+                    InvalidArgKind::UnexpectedComma,
+                    comma.span,
+                ));
+            }
+
+            tail = rest;
         }
     }
 
-    /// Parseia um único argumento posicional.
+    /// Parseia um único argumento posicional no início de `line`.
     ///
     /// Formas aceitas:
     /// - `Ident`;
-    /// - `Number`.
+    /// - `Number`;
+    /// - `+Number`;
+    /// - `-Number`.
     ///
     /// Retorno:
-    /// - `Ok(Symbol)` quando o token representa um argumento válido.
+    /// - `Ok((MacroCallArg, tail))` quando o prefixo representa argumento
+    ///   válido.
     ///
     /// Erros:
-    /// - `InvalidMacroCall(InvalidArg(InvalidArgIdent))` quando o token não é
-    ///   argumento posicional aceito.
+    /// - `InvalidMacroCallSyntatic(InvalidArg(InvalidArgIdent))` quando o
+    ///   prefixo não representa argumento posicional aceito.
     ///
     /// Efeito colateral:
     /// - nenhum.
-    fn parse_macro_call_arg(&self, token: &Token) -> Result<Symbol, PreprocessorError> {
-        match token.kind {
-            TokenKind::Ident(sym) | TokenKind::Number(sym) => Ok(sym),
-            _ => Err(Self::invalid_arg_error(
+    fn parse_macro_call_arg<'a>(
+        &mut self,
+        line: &'a [Token],
+    ) -> Result<(MacroCallArg, &'a [Token]), PreprocessorError> {
+        let (first, tail) = line.split_first().ok_or_else(|| {
+            Self::invalid_arg_sintatic_error(InvalidArgKind::InvalidArgIdent, Span::default())
+        })?;
+
+        match first.kind {
+            TokenKind::Ident(sym) => Ok((
+                MacroCallArg::Ident {
+                    sym,
+                    node_id: self.alloc_node_id(first.span),
+                },
+                tail,
+            )),
+            TokenKind::Number(sym) => Ok((
+                MacroCallArg::UnsignedNumber {
+                    sym,
+                    node_id: self.alloc_node_id(first.span),
+                },
+                tail,
+            )),
+            TokenKind::Plus | TokenKind::Minus => {
+                let (number_token, rest) = tail.split_first().ok_or_else(|| {
+                    Self::invalid_arg_sintatic_error(InvalidArgKind::InvalidArgIdent, first.span)
+                })?;
+
+                let TokenKind::Number(sym) = number_token.kind else {
+                    return Err(Self::invalid_arg_sintatic_error(
+                        InvalidArgKind::InvalidArgIdent,
+                        number_token.span,
+                    ));
+                };
+
+                let sign = match first.kind {
+                    TokenKind::Plus => Sign::Plus,
+                    TokenKind::Minus => Sign::Minus,
+                    _ => unreachable!(),
+                };
+
+                let span = Self::span_from_bounds(first.span, number_token.span);
+                Ok((
+                    MacroCallArg::SignedNumber {
+                        sign,
+                        sym,
+                        node_id: self.alloc_node_id(span),
+                    },
+                    rest,
+                ))
+            }
+            _ => Err(Self::invalid_arg_sintatic_error(
                 InvalidArgKind::InvalidArgIdent,
-                token.span,
+                first.span,
             )),
         }
     }
 
     /// Constrói erro específico da família de chamadas de macro.
     ///
-    /// Encapsula `MacroCallErrorKind` em
-    /// `PreprocessorErrorKind::InvalidMacroCall`, preservando o `span`.
-    fn macro_call_error(kind: MacroCallErrorKind, span: Span) -> PreprocessorError {
+    /// Encapsula `MacroCallSyntaticErrorKind` em
+    /// `PreprocessorErrorKind::InvalidMacroCallSyntatic`, preservando o `span`.
+    fn macro_call_sintatic_error(
+        kind: MacroCallSyntaticErrorKind,
+        span: Span,
+    ) -> PreprocessorError {
         PreprocessorError {
-            kind: PreprocessorErrorKind::InvalidMacroCall(kind),
+            kind: PreprocessorErrorKind::InvalidMacroCallSyntatic(kind),
             span,
         }
     }
 
     /// Constrói erro de argumento inválido para chamada de macro.
     ///
-    /// É um atalho para `InvalidMacroCall(InvalidArg(...))`, usado no parser
+    /// É um atalho para `InvalidMacroCallSyntatic(InvalidArg(...))`, usado no parser
     /// de argumentos para manter o fluxo declarativo.
     ///
     /// Contrato:
     /// - não altera estado interno;
     /// - preserva o `span` recebido.
     #[inline]
-    fn invalid_arg_error(kind: InvalidArgKind, span: Span) -> PreprocessorError {
-        Self::macro_call_error(MacroCallErrorKind::InvalidArg(kind), span)
+    fn invalid_arg_sintatic_error(kind: InvalidArgKind, span: Span) -> PreprocessorError {
+        Self::macro_call_sintatic_error(MacroCallSyntaticErrorKind::InvalidArg(kind), span)
     }
 }

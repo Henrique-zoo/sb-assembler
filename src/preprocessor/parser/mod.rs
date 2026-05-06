@@ -35,7 +35,10 @@ use crate::{
     errors::{DirectiveKind, DirectiveSyntaxErrorKind, PreprocessorError, PreprocessorErrorKind},
     interner::Symbol,
     lexer::{Span, Token, TokenKind},
-    preprocessor::Preprocessor,
+    preprocessor::{
+        Preprocessor,
+        ir::{Number, Operand, Sign},
+    },
 };
 
 mod equ_parser;
@@ -43,6 +46,18 @@ mod if_parser;
 mod macro_call_parser;
 mod macro_parser;
 mod section_parser;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OperandParseErrorKind {
+    Missing,
+    InvalidType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OperandParseError {
+    kind: OperandParseErrorKind,
+    span: Span,
+}
 
 impl Preprocessor {
     /// Constrói um erro sintático genérico de diretiva com `span`.
@@ -61,14 +76,14 @@ impl Preprocessor {
     ///
     /// # Exemplos
     /// ```rust,ignore
-    /// let err = Preprocessor::directive_syntax_error(
+    /// let err = Preprocessor::directive_sintatic_error(
     ///     DirectiveSyntaxErrorKind::TrailingTokens {
     ///         directive: DirectiveKind::If,
     ///     },
     ///     token.span,
     /// );
     /// ```
-    fn directive_syntax_error(kind: DirectiveSyntaxErrorKind, span: Span) -> PreprocessorError {
+    fn directive_sintatic_error(kind: DirectiveSyntaxErrorKind, span: Span) -> PreprocessorError {
         PreprocessorError {
             kind: PreprocessorErrorKind::InvalidDirectiveSyntax(kind),
             span,
@@ -120,10 +135,10 @@ impl Preprocessor {
         fallback_span: Span,
     ) -> Result<(&'a [Token], Span), PreprocessorError> {
         let (token, tail) = line.split_first().ok_or_else(|| {
-            Self::directive_syntax_error(
+            Self::directive_sintatic_error(
                 DirectiveSyntaxErrorKind::MissingToken {
                     directive,
-                    token_missed: Some(expected_keyword),
+                    token_missed: TokenKind::Ident(expected_keyword),
                 },
                 fallback_span,
             )
@@ -132,10 +147,10 @@ impl Preprocessor {
         if matches!(&token.kind, TokenKind::Ident(sym) if *sym == expected_keyword) {
             Ok((tail, token.span))
         } else {
-            Err(Self::directive_syntax_error(
+            Err(Self::directive_sintatic_error(
                 DirectiveSyntaxErrorKind::UnexpectedToken {
                     directive,
-                    expected_token: expected_keyword,
+                    expected_token: TokenKind::Ident(expected_keyword),
                 },
                 token.span,
             ))
@@ -189,15 +204,11 @@ impl Preprocessor {
         expected_token: TokenKind,
         fallback_span: Span,
     ) -> Result<(&'a [Token], Span), PreprocessorError> {
-        let expected_token_symbol = expected_token
-            .to_sym(&self.fixed_symbols)
-            .expect("consume_required_token expects a symbolizable token kind");
-
         let (token, tail) = line.split_first().ok_or_else(|| {
-            Self::directive_syntax_error(
+            Self::directive_sintatic_error(
                 DirectiveSyntaxErrorKind::MissingToken {
                     directive,
-                    token_missed: Some(expected_token_symbol),
+                    token_missed: expected_token,
                 },
                 fallback_span,
             )
@@ -206,10 +217,10 @@ impl Preprocessor {
         if token.kind == expected_token {
             Ok((tail, token.span))
         } else {
-            Err(Self::directive_syntax_error(
+            Err(Self::directive_sintatic_error(
                 DirectiveSyntaxErrorKind::UnexpectedToken {
                     directive,
-                    expected_token: expected_token_symbol,
+                    expected_token: expected_token,
                 },
                 token.span,
             ))
@@ -259,7 +270,7 @@ impl Preprocessor {
     ) -> Result<(), PreprocessorError> {
         if let Some(token) = line.first() {
             if token.kind == forbidden_kind {
-                return Err(Self::directive_syntax_error(
+                return Err(Self::directive_sintatic_error(
                     DirectiveSyntaxErrorKind::ForbiddenToken { directive },
                     token.span,
                 ));
@@ -305,7 +316,7 @@ impl Preprocessor {
             return Ok(());
         }
 
-        Err(Self::directive_syntax_error(
+        Err(Self::directive_sintatic_error(
             DirectiveSyntaxErrorKind::TrailingTokens { directive },
             line[0].span,
         ))
@@ -385,6 +396,86 @@ impl Preprocessor {
             line: start.line,
             column: start.column,
             len: end_pos.saturating_sub(start.pos),
+        }
+    }
+
+    /// Parseia um operando simples (`Ident`, `Number`, `+Number` ou `-Number`).
+    ///
+    /// Este helper centraliza a gramática mínima de operandos usada por
+    /// diretivas como `IF` e `EQU`, retornando também o sufixo não consumido.
+    ///
+    /// Contrato:
+    /// - entrada vazia => `Err(Missing)` com `fallback_span`;
+    /// - token inicial inválido => `Err(InvalidType)` no `span` do token;
+    /// - sinal sem número (`+`/`-` no fim ou seguido por token não numérico)
+    ///   => `Err(InvalidType)` no `span` do problema.
+    ///
+    /// Retorno:
+    /// - `Ok((operand, tail, consumed_span))` quando o prefixo é válido;
+    /// - `Err(OperandParseError)` quando o prefixo viola a gramática.
+    fn parse_operand<'a>(
+        &mut self,
+        line: &'a [Token],
+        fallback_span: Span,
+    ) -> Result<(Operand, &'a [Token], Span), OperandParseError> {
+        let (first, tail) = line.split_first().ok_or(OperandParseError {
+            kind: OperandParseErrorKind::Missing,
+            span: fallback_span,
+        })?;
+
+        match first.kind {
+            TokenKind::Ident(sym) => {
+                let node_id = self.alloc_node_id(first.span);
+                Ok((Operand::Ident { sym, node_id }, tail, first.span))
+            }
+            TokenKind::Number(_) => {
+                let operand = self.parse_unsigned(first);
+                Ok((operand, tail, first.span))
+            }
+            TokenKind::Plus | TokenKind::Minus => {
+                let (num_tok, rest) = tail.split_first().ok_or(OperandParseError {
+                    kind: OperandParseErrorKind::InvalidType,
+                    span: first.span,
+                })?;
+                if !matches!(num_tok.kind, TokenKind::Number(_)) {
+                    return Err(OperandParseError {
+                        kind: OperandParseErrorKind::InvalidType,
+                        span: num_tok.span,
+                    });
+                }
+
+                let operand = self.parse_signed(first, num_tok);
+                let consumed_span = Self::span_from_bounds(first.span, num_tok.span);
+                Ok((operand, rest, consumed_span))
+            }
+            _ => Err(OperandParseError {
+                kind: OperandParseErrorKind::InvalidType,
+                span: first.span,
+            }),
+        }
+    }
+
+    fn parse_signed(&mut self, sign_tok: &Token, num_tok: &Token) -> Operand {
+        let sign = Sign::from(sign_tok);
+        if let TokenKind::Number(sym) = num_tok.kind {
+            let span = Self::span_from_bounds(sign_tok.span, num_tok.span);
+            Operand::Number {
+                number: Number::Signed { sign, sym },
+                node_id: self.alloc_node_id(span),
+            }
+        } else {
+            unreachable!()
+        }
+    }
+
+    fn parse_unsigned(&mut self, num_tok: &Token) -> Operand {
+        if let TokenKind::Number(sym) = num_tok.kind {
+            Operand::Number {
+                number: Number::Unsigned { sym },
+                node_id: self.alloc_node_id(num_tok.span),
+            }
+        } else {
+            unreachable!()
         }
     }
 }

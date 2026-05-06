@@ -7,10 +7,10 @@ use crate::{
 impl Preprocessor {
     /// Faz o parsing de uma linha candidata à diretiva `SECTION TEXT`.
     ///
-    /// Retorno planejado:
+    /// Retorno:
     /// - `Ok(SectionDecl { section: Section::Text, .. })`.
-    pub(in crate::preprocessor) fn parse_text_line(
-        &self,
+    pub(in crate::preprocessor) fn parse_text_section_line(
+        &mut self,
         line: &[Token],
     ) -> Result<SectionDecl, PreprocessorError> {
         self.parse_section_line(line, Section::Text)
@@ -18,10 +18,10 @@ impl Preprocessor {
 
     /// Faz o parsing de uma linha candidata à diretiva `SECTION DATA`.
     ///
-    /// Retorno planejado:
+    /// Retorno:
     /// - `Ok(SectionDecl { section: Section::Data, .. })`.
-    pub(in crate::preprocessor) fn parse_data_line(
-        &self,
+    pub(in crate::preprocessor) fn parse_data_section_line(
+        &mut self,
         line: &[Token],
     ) -> Result<SectionDecl, PreprocessorError> {
         self.parse_section_line(line, Section::Data)
@@ -29,7 +29,7 @@ impl Preprocessor {
 
     /// Parser base para diretivas de seção.
     fn parse_section_line(
-        &self,
+        &mut self,
         line: &[Token],
         section: Section,
     ) -> Result<SectionDecl, PreprocessorError> {
@@ -54,7 +54,8 @@ impl Preprocessor {
 
         self.ensure_no_trailing_tokens(tail, DirectiveKind::Section)?;
         let span = self.consumed_prefix_span(line, tail, fallback_span);
+        let node_id = self.alloc_node_id(span);
 
-        Ok(SectionDecl { section, span })
+        Ok(SectionDecl { node_id, section })
     }
 }

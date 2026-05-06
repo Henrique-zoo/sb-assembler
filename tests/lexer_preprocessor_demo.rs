@@ -1,0 +1,178 @@
+#![allow(dead_code)]
+
+#[path = "../src/assembler/mod.rs"]
+mod assembler;
+#[path = "../src/errors/mod.rs"]
+mod errors;
+#[path = "../src/interner/mod.rs"]
+mod interner;
+#[path = "../src/language/mod.rs"]
+mod language;
+#[path = "../src/lexer/mod.rs"]
+mod lexer;
+#[path = "../src/preprocessor/mod.rs"]
+mod preprocessor;
+
+use interner::Interner;
+use language::KeywordTable;
+use lexer::{Lexer, Token, TokenKind};
+use preprocessor::{LogicalLine, Preprocessor};
+
+fn token_to_text(token: &Token, interner: &Interner) -> String {
+    match token.kind {
+        TokenKind::Ident(sym) | TokenKind::Number(sym) => interner
+            .get_str(sym)
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("<sym:{sym}>")),
+        TokenKind::Ampersand => "&".to_owned(),
+        TokenKind::Comma => ",".to_owned(),
+        TokenKind::Colon => ":".to_owned(),
+        TokenKind::Plus => "+".to_owned(),
+        TokenKind::Minus => "-".to_owned(),
+        TokenKind::NewLine => "\\n".to_owned(),
+        TokenKind::Eof => "<EOF>".to_owned(),
+    }
+}
+
+fn render_lexer_output(tokens: &[Token], interner: &Interner) -> String {
+    let mut out = String::new();
+    let mut current_line = Vec::new();
+
+    for token in tokens {
+        match token.kind {
+            TokenKind::NewLine => {
+                out.push_str(&current_line.join(" "));
+                out.push('\n');
+                current_line.clear();
+            }
+            TokenKind::Eof => {
+                if !current_line.is_empty() {
+                    out.push_str(&current_line.join(" "));
+                    out.push('\n');
+                    current_line.clear();
+                }
+                out.push_str("<EOF>");
+            }
+            _ => current_line.push(token_to_text(token, interner)),
+        }
+    }
+
+    if !current_line.is_empty() {
+        out.push_str(&current_line.join(" "));
+    }
+
+    out
+}
+
+fn render_preprocessor_output(lines: &[LogicalLine], interner: &Interner) -> String {
+    let mut out = String::new();
+
+    for line in lines {
+        let line_text = line
+            .content
+            .iter()
+            .map(|token| token_to_text(token, interner))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        out.push_str(&line_text);
+
+        match line.terminator.kind {
+            TokenKind::NewLine => out.push('\n'),
+            TokenKind::Eof => out.push_str("<EOF>"),
+            _ => {}
+        }
+    }
+
+    out
+}
+
+#[test]
+fn lexer_and_preprocessor_demo() {
+    let source = r#"; ------------------------------------------------------------
+; CENARIO: preprocessor completo com MACRO, EQU, IF e seções
+; ------------------------------------------------------------
+
+ACCUM: MACRO &DST, &SRC, &TMP
+LOAD &TMP
+ADD &TMP, &SRC
+STORE &DST
+ENDMACRO
+
+CLEAR: MACRO &DST
+LOAD ZERO
+STORE &DST
+ENDMACRO
+
+ZERO EQU 0
+ONE EQU 1
+TRUE EQU ONE
+ENABLE_LOG EQU TRUE
+
+SECTION DATA
+INPUT SPACE
+AUX SPACE
+RESULT SPACE
+LOGPTR SPACE
+
+SECTION TEXT
+ACCUM RESULT, INPUT, AUX
+IF ENABLE_LOG
+STORE LOGPTR
+IF 0
+ADD INPUT, ONE
+CLEAR AUX
+"#;
+
+    let mut interner = Interner::new();
+    let keyword_table = KeywordTable::new(&mut interner);
+
+    let tokens = {
+        let lexer = Lexer::new(source, &mut interner);
+        lexer.collect::<Result<Vec<_>, _>>()
+    }
+    .expect("lexer falhou no cenário de teste");
+
+    let lexer_output = render_lexer_output(&tokens, &interner);
+    println!("===== LEXER OUTPUT =====\n{lexer_output}");
+
+    let mut preprocessor = Preprocessor::new(&mut interner, keyword_table);
+    let preprocessed = preprocessor
+        .process(tokens, &mut interner)
+        .expect("preprocessor falhou no cenário de teste");
+
+    let preprocessor_output = render_preprocessor_output(&preprocessed, &interner);
+    println!("===== PREPROCESSOR OUTPUT =====\n{preprocessor_output}");
+
+    assert!(
+        preprocessor_output.contains("LOAD AUX"),
+        "macro ACCUM não expandiu corretamente"
+    );
+    assert!(
+        preprocessor_output.contains("ADD AUX , INPUT"),
+        "macro ACCUM não expandiu corretamente"
+    );
+    assert!(
+        preprocessor_output.contains("STORE RESULT"),
+        "macro ACCUM não expandiu corretamente"
+    );
+    assert!(
+        preprocessor_output.contains("STORE LOGPTR"),
+        "IF ENABLE_LOG deveria incluir a linha seguinte"
+    );
+    assert!(
+        !preprocessor_output.contains("ADD INPUT , ONE"),
+        "IF 0 deveria descartar a linha seguinte"
+    );
+    assert!(
+        preprocessor_output.contains("INPUT SPACE")
+            && preprocessor_output.contains("AUX SPACE")
+            && preprocessor_output.contains("RESULT SPACE")
+            && preprocessor_output.contains("LOGPTR SPACE"),
+        "seção DATA não foi preservada no output"
+    );
+    assert!(
+        preprocessor_output.ends_with("<EOF>"),
+        "output do preprocessor deve terminar com <EOF>"
+    );
+}

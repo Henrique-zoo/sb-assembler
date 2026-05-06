@@ -8,7 +8,7 @@
 //! - menor consumo de memória para lexemas repetidos;
 //! - mapeamento estável durante a execução do processo.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
 /// Identificador compacto de uma string internada.
 pub type Symbol = u32;
@@ -35,12 +35,13 @@ pub enum Entry<'a> {
 /// Invariantes esperadas:
 /// - para toda chave em `map`, `vec[symbol]` contém a string correspondente;
 /// - `symbol` é sempre um índice válido no `vec`.
+/// - `map` e `vec` compartilham a mesma alocação textual via [`Rc<str>`].
 #[derive(Debug)]
 pub struct Interner {
     /// Mapeia string -> símbolo.
-    map: HashMap<String, Symbol>,
+    map: HashMap<Rc<str>, Symbol>,
     /// Mapeia símbolo (índice) -> string.
-    vec: Vec<String>,
+    vec: Vec<Rc<str>>,
 }
 
 impl Interner {
@@ -96,6 +97,10 @@ impl Interner {
     pub fn get(&self, s: &str) -> Option<Symbol> {
         self.map.get(s).copied()
     }
+
+    pub fn get_str(&self, sym: Symbol) -> Option<&str> {
+        self.vec.get(sym as usize).map(|s| s.as_ref())
+    }
 }
 
 impl<'a> Entry<'a> {
@@ -108,9 +113,10 @@ impl<'a> Entry<'a> {
             Entry::Occupied(sym) => sym,
             Entry::Vacant { interner, key } => {
                 let sym = interner.vec.len() as Symbol;
+                let key_rc: Rc<str> = Rc::from(key);
 
-                interner.vec.push(key.clone());
-                interner.map.insert(key, sym);
+                interner.vec.push(Rc::clone(&key_rc));
+                interner.map.insert(key_rc, sym);
 
                 sym
             }

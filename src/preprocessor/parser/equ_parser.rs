@@ -18,8 +18,8 @@
 
 use crate::{
     errors::{
-        DirectiveKind, DirectiveSyntaxErrorKind, EquDirectiveErrorKind, PreprocessorError,
-        PreprocessorErrorKind::InvalidEquDirective,
+        DirectiveKind, DirectiveSyntaxErrorKind, EquDirectiveSyntaticErrorKind, PreprocessorError,
+        PreprocessorErrorKind::InvalidEquDirectiveSyntatic,
     },
     interner::Symbol,
     lexer::{
@@ -50,7 +50,7 @@ impl Preprocessor {
     /// 6. consolida `span` final com [`Self::consumed_prefix_span`].
     ///
     /// Retorno:
-    /// - `Ok(EquDecl { alias, value, span })` quando a diretiva está correta.
+    /// - `Ok(EquDecl { node_id, alias, value })` quando a diretiva está correta.
     ///
     /// Erros:
     /// - propaga falhas de alias ausente/inválido;
@@ -69,7 +69,7 @@ impl Preprocessor {
     /// // COUNT EQU 10
     /// ```
     pub(in crate::preprocessor) fn parse_equ_line(
-        &self,
+        &mut self,
         line: &[Token],
     ) -> Result<EquDecl, PreprocessorError> {
         let (alias, tail, fallback_span) = self.parse_equ_alias(line)?;
@@ -86,8 +86,13 @@ impl Preprocessor {
 
         self.ensure_no_trailing_tokens(tail, DirectiveKind::Equ)?;
         let span = self.consumed_prefix_span(line, tail, fallback_span);
+        let node_id = self.alloc_node_id(span);
 
-        Ok(EquDecl { alias, value, span })
+        Ok(EquDecl {
+            node_id,
+            alias,
+            value,
+        })
     }
 
     /// Extrai e valida o alias inicial da diretiva `EQU`.
@@ -117,10 +122,10 @@ impl Preprocessor {
         line: &'a [Token],
     ) -> Result<(Symbol, &'a [Token], Span), PreprocessorError> {
         let (alias_token, tail) = line.split_first().ok_or_else(|| {
-            Self::directive_syntax_error(
+            Self::directive_sintatic_error(
                 DirectiveSyntaxErrorKind::MissingToken {
                     directive: DirectiveKind::Equ,
-                    token_missed: Some(self.keywords.equ_kw),
+                    token_missed: TokenKind::Ident(self.keywords.equ_kw),
                 },
                 Span::default(),
             )
@@ -129,10 +134,10 @@ impl Preprocessor {
         if let Ident(sym) = alias_token.kind {
             Ok((sym, tail, alias_token.span))
         } else {
-            Err(Self::directive_syntax_error(
+            Err(Self::directive_sintatic_error(
                 DirectiveSyntaxErrorKind::UnexpectedToken {
                     directive: DirectiveKind::Equ,
-                    expected_token: self.keywords.equ_kw,
+                    expected_token: TokenKind::Ident(self.keywords.equ_kw),
                 },
                 alias_token.span,
             ))
@@ -145,6 +150,8 @@ impl Preprocessor {
     /// ```ignore
     /// EQU <Ident>
     /// EQU <Number>
+    /// EQU +<Number>
+    /// EQU -<Number>
     /// ```
     ///
     /// Parâmetros:
@@ -159,43 +166,44 @@ impl Preprocessor {
     ///
     /// Erros:
     /// - `MissingToken` quando não há valor após `EQU`;
-    /// - `InvalidEquDirective(InvalidValueType)` quando o token de valor não é
-    ///   `Ident` nem `Number`.
+    /// - `InvalidEquDirectiveSyntatic(InvalidValueType)` quando o token de
+    ///   valor não é `Ident`, `Number`, `+Number` ou `-Number`.
     ///
     /// Efeito colateral:
     /// - nenhum.
     fn parse_equ_value<'a>(
-        &self,
+        &mut self,
         line: &'a [Token],
         fallback_span: Span,
     ) -> Result<(Operand, &'a [Token], Span), PreprocessorError> {
-        let (value_token, tail) = line.split_first().ok_or_else(|| {
-            Self::directive_syntax_error(
-                DirectiveSyntaxErrorKind::MissingToken {
-                    directive: DirectiveKind::Equ,
-                    token_missed: None,
-                },
-                fallback_span,
-            )
-        })?;
+        let generic_ident = self.fixed_symbols.generic_ident;
 
-        match &value_token.kind {
-            TokenKind::Ident(sym) => Ok((Operand::Ident(*sym), tail, value_token.span)),
-            TokenKind::Number(sym) => Ok((Operand::Number(*sym), tail, value_token.span)),
-            _ => Err(Self::equ_directive_error(
-                EquDirectiveErrorKind::InvalidValueType,
-                value_token.span,
-            )),
-        }
+        self.parse_operand(line, fallback_span)
+            .map_err(|err| match err.kind {
+                super::OperandParseErrorKind::Missing => Self::directive_sintatic_error(
+                    DirectiveSyntaxErrorKind::MissingToken {
+                        directive: DirectiveKind::Equ,
+                        token_missed: TokenKind::Ident(generic_ident),
+                    },
+                    err.span,
+                ),
+                super::OperandParseErrorKind::InvalidType => Self::equ_directive_sintatic_error(
+                    EquDirectiveSyntaticErrorKind::InvalidValueType,
+                    err.span,
+                ),
+            })
     }
 
     /// Constrói erro específico da família `EQU`.
     ///
-    /// Encapsula `EquDirectiveErrorKind` em
-    /// `PreprocessorErrorKind::InvalidEquDirective`, preservando o `span`.
-    fn equ_directive_error(kind: EquDirectiveErrorKind, span: Span) -> PreprocessorError {
+    /// Encapsula `EquDirectiveSyntaticErrorKind` em
+    /// `PreprocessorErrorKind::InvalidEquDirectiveSyntatic`, preservando o `span`.
+    fn equ_directive_sintatic_error(
+        kind: EquDirectiveSyntaticErrorKind,
+        span: Span,
+    ) -> PreprocessorError {
         PreprocessorError {
-            kind: InvalidEquDirective(kind),
+            kind: InvalidEquDirectiveSyntatic(kind),
             span,
         }
     }

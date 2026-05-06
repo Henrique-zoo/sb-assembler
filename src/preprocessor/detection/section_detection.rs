@@ -33,37 +33,37 @@ impl Preprocessor {
     /// let add = interner.entry("ADD").or_insert();
     ///
     /// // Caso canônico
-    /// assert!(preprocessor.looks_like_text_line(&[
+    /// assert!(preprocessor.looks_like_text_section_line(&[
     ///     Token::new(TokenKind::Ident(section_kw), span),
     ///     Token::new(TokenKind::Ident(text_kw), span),
     /// ]));
     ///
     /// // Caso permissivo com sufixo extra
-    /// assert!(preprocessor.looks_like_text_line(&[
+    /// assert!(preprocessor.looks_like_text_section_line(&[
     ///     Token::new(TokenKind::Ident(section_kw), span),
     ///     Token::new(TokenKind::Ident(text_kw), span),
     ///     Token::new(TokenKind::Ident(add), span),
     /// ]));
     ///
     /// // Caso permissivo sem `SECTION`
-    /// assert!(preprocessor.looks_like_text_line(&[
+    /// assert!(preprocessor.looks_like_text_section_line(&[
     ///     Token::new(TokenKind::Ident(text_kw), span),
     /// ]));
     ///
     /// // Caso permissivo com possível typo em `SECTION`
     /// let secao_kw = interner.entry("SECAO").or_insert();
-    /// assert!(preprocessor.looks_like_text_line(&[
+    /// assert!(preprocessor.looks_like_text_section_line(&[
     ///     Token::new(TokenKind::Ident(secao_kw), span),
     ///     Token::new(TokenKind::Ident(text_kw), span),
     /// ]));
     ///
     /// // Caso não candidato
-    /// assert!(!preprocessor.looks_like_text_line(&[
+    /// assert!(!preprocessor.looks_like_text_section_line(&[
     ///     Token::new(TokenKind::Ident(section_kw), span),
     ///     Token::new(TokenKind::Ident(add), span),
     /// ]));
     /// ```
-    pub(in crate::preprocessor) fn looks_like_text_line(&self, line: &[Token]) -> bool {
+    pub(in crate::preprocessor) fn looks_like_text_section_line(&self, line: &[Token]) -> bool {
         self.looks_like_section_kind_line(line, self.keywords.text_kw)
     }
 
@@ -86,37 +86,37 @@ impl Preprocessor {
     /// let space = interner.entry("SPACE").or_insert();
     ///
     /// // Caso canônico
-    /// assert!(preprocessor.looks_like_data_line(&[
+    /// assert!(preprocessor.looks_like_data_section_line(&[
     ///     Token::new(TokenKind::Ident(section_kw), span),
     ///     Token::new(TokenKind::Ident(data_kw), span),
     /// ]));
     ///
     /// // Caso permissivo com sufixo extra
-    /// assert!(preprocessor.looks_like_data_line(&[
+    /// assert!(preprocessor.looks_like_data_section_line(&[
     ///     Token::new(TokenKind::Ident(section_kw), span),
     ///     Token::new(TokenKind::Ident(data_kw), span),
     ///     Token::new(TokenKind::Ident(space), span),
     /// ]));
     ///
     /// // Caso permissivo sem `SECTION`
-    /// assert!(preprocessor.looks_like_data_line(&[
+    /// assert!(preprocessor.looks_like_data_section_line(&[
     ///     Token::new(TokenKind::Ident(data_kw), span),
     /// ]));
     ///
     /// // Caso permissivo com possível typo em `SECTION`
     /// let secao_kw = interner.entry("SECAO").or_insert();
-    /// assert!(preprocessor.looks_like_data_line(&[
+    /// assert!(preprocessor.looks_like_data_section_line(&[
     ///     Token::new(TokenKind::Ident(secao_kw), span),
     ///     Token::new(TokenKind::Ident(data_kw), span),
     /// ]));
     ///
     /// // Caso não candidato
-    /// assert!(!preprocessor.looks_like_data_line(&[
+    /// assert!(!preprocessor.looks_like_data_section_line(&[
     ///     Token::new(TokenKind::Ident(section_kw), span),
     ///     Token::new(TokenKind::Ident(space), span),
     /// ]));
     /// ```
-    pub(in crate::preprocessor) fn looks_like_data_line(&self, line: &[Token]) -> bool {
+    pub(in crate::preprocessor) fn looks_like_data_section_line(&self, line: &[Token]) -> bool {
         self.looks_like_section_kind_line(line, self.keywords.data_kw)
     }
 

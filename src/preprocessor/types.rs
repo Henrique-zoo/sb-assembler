@@ -13,8 +13,10 @@
 use std::collections::HashMap;
 
 use crate::{
+    assembler::{SignedWord, Word},
     interner::Symbol,
-    lexer::{Token, TokenKind},
+    language::KeywordTable,
+    lexer::{Span, Token, TokenKind},
     preprocessor::ir::Macro,
 };
 
@@ -57,6 +59,10 @@ pub(crate) struct FixedSymbols {
     pub plus: Symbol,
     /// Símbolo de `-`.
     pub minus: Symbol,
+    /// Símbolo do identificador genérico (para logs) `A`
+    pub generic_ident: Symbol,
+    /// Símbolo do número genérico (para logs) `10`
+    pub generic_number: Symbol,
 }
 
 impl TokenKind {
@@ -93,18 +99,29 @@ impl Token {
 /// - tabelas semânticas (macros e aliases `EQU`);
 /// - contexto de seção atual;
 /// - símbolos internados de keywords e tokens fixos.
+/// - metadados de diagnóstico por `NodeId` (`node_spans`).
 #[derive(Debug)]
 pub(crate) struct Preprocessor {
     /// Tabela de macros definidas (`nome -> definição`).
     pub(super) macros: HashMap<Symbol, Macro>,
     /// Tabela de aliases `EQU` (`alias -> valor`).
-    pub(super) equs: HashMap<Symbol, Symbol>,
+    ///
+    /// O valor já é armazenado em forma semântica tipada ([`EquValue`]),
+    /// preservando distinção entre números assinados e não-assinados.
+    ///
+    /// Isso evita perda de informação de sinal e reduz necessidade de reparsing
+    /// textual em etapas posteriores.
+    pub(super) equs: HashMap<Symbol, EquValue>,
     /// Seção de saída atualmente ativa.
     pub(super) current_section: Section,
     /// Símbolos internados das keywords da linguagem.
     pub(super) keywords: Keywords,
+    /// Tabela de palavras reservadas da linguagem.
+    pub(super) keyword_table: KeywordTable,
     /// Símbolos internados de tokens fixos usados em diagnósticos.
     pub(super) fixed_symbols: FixedSymbols,
+    /// Tabela lateral de spans da IR indexada por `NodeId`.
+    pub(super) node_spans: Vec<Span>,
 }
 
 /// Seção lógica corrente do fonte durante o pré-processamento.
@@ -122,9 +139,26 @@ pub(crate) enum Section {
 ///
 /// `content` contém apenas tokens da linha (sem `NewLine`/`Eof`) e
 /// `terminator` guarda o separador original da linha no fonte.
-pub(super) struct LogicalLine {
+#[derive(Debug, Clone)]
+pub(crate) struct LogicalLine {
     /// Conteúdo da linha lógica, sem token terminador.
     pub content: Vec<Token>,
     /// Separador original da linha (`NewLine` ou `Eof`).
     pub terminator: Token,
+}
+
+/// Valor semântico normalizado para aliases `EQU`.
+///
+/// Este enum modela o valor já resolvido de uma declaração `EQU`, mantendo
+/// explicitamente a natureza assinada ou não-assinada do resultado.
+///
+/// Objetivo:
+/// - preservar semântica de `+`/`-` sem depender do lexema original;
+/// - evitar ambiguidades ao consumir aliases `EQU` em diretivas como `IF`.
+#[derive(Debug, Clone, Copy)]
+pub enum EquValue {
+    /// Valor não-assinado de 16 bits.
+    Unsigned(Word),
+    /// Valor assinado de 16 bits.
+    Signed(SignedWord),
 }

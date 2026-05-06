@@ -45,7 +45,7 @@ impl Default for Span {
 ///
 /// Variantes que carregam [`Symbol`] referenciam texto internado no
 /// `Interner`, evitando cópias repetidas de lexemas.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TokenKind {
     /// Identificador internado (`[A-Za-z_][A-Za-z0-9_]*`).
     Ident(Symbol),
@@ -74,7 +74,7 @@ pub(crate) enum TokenKind {
 /// Um token sempre combina:
 /// - classe léxica (`kind`);
 /// - localização no fonte (`span`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Token {
     /// Classe léxica do token.
     pub kind: TokenKind,
