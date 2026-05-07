@@ -1,23 +1,29 @@
-//! Intermediate Representation (IR) do pré-processador.
+//! Representação intermediária (IR) do pré-processador.
 //!
-//! Este módulo define as estruturas de dados que representam diretivas e
-//! construções reconhecidas pelo parser, em um formato mais estável para o
-//! estágio de execução.
+//! Este módulo reúne os nós sintáticos produzidos pelos parsers do
+//! pré-processador. Cada nó representa uma construção já reconhecida e validada
+//! sintaticamente, mas ainda sem os efeitos semânticos aplicados ao estado do
+//! pré-processador.
 //!
 //! Papel no pipeline:
-//! 1. `detection` identifica uma tentativa de diretiva (heurístico/permissivo);
-//! 2. `parser` valida sintaxe e converte para IR;
-//! 3. `execute` aplica semântica a partir da IR.
+//! 1. `detection` identifica, de forma permissiva, se uma linha parece ser uma
+//!    diretiva ou chamada relevante para o pré-processador;
+//! 2. `parser` valida a forma esperada e converte os tokens em uma IR tipada;
+//! 3. `execute` consome essa IR para registrar macros, avaliar `EQU`/`IF`,
+//!    trocar seção ou expandir chamadas de macro.
 //!
-//! Motivação:
-//! - evita acoplamento direto entre parser e estado mutável do pré-processador;
-//! - melhora legibilidade e testabilidade (dados explícitos em vez de slices
-//!   de token soltos);
-//! - deixa o parser estritamente sintático, sem efeitos colaterais.
+//! Contrato dos tipos:
+//! - não executam diretivas e não alteram tabelas semânticas;
+//! - preservam símbolos internados (`Symbol`) em vez de copiar strings;
+//! - usam `NodeId` para associar nós sintáticos aos spans guardados pelo
+//!   `Preprocessor`;
+//! - mantêm tokens brutos apenas quando a expansão textual de macro precisa
+//!   reemitir a forma léxica original.
 //!
 //! Escopo:
-//! - Este módulo não executa nada e não decide semântica;
-//! - Ele apenas modela a informação extraída de cada linha/diretiva.
+//! - parsing e diagnóstico de sintaxe ficam nos submódulos `parser`;
+//! - avaliação semântica fica nos submódulos `execute`;
+//! - este módulo apenas define a forma dos dados que atravessam essa fronteira.
 
 use crate::{
     interner::Symbol,
@@ -30,10 +36,25 @@ use crate::{
 /// O `NodeId` permite desacoplar metadados de diagnóstico (`Span`) da
 /// representação principal da IR. O mapeamento `NodeId -> Span` fica na
 /// tabela lateral mantida pelo `Preprocessor`.
+///
+/// Contrato:
+/// - deve ser tratado como identificador opaco;
+/// - só é significativo dentro da instância de `Preprocessor` que o alocou;
+/// - aponta para o span do nó inteiro, não necessariamente para um token único.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct NodeId(pub u32);
 
 /// Alias para parâmetro formal de macro.
+///
+/// Representa o identificador que aparece depois de `&` em uma declaração de
+/// macro.
+///
+/// Forma canônica:
+/// ```text
+/// ROT: MACRO &A, &B
+/// ```
+///
+/// Neste exemplo, `A` e `B` são armazenados como `Param`.
 ///
 /// Mantido como alias para permitir evolução futura da representação sem
 /// alterar assinaturas de alto nível.
@@ -41,29 +62,86 @@ pub(crate) type Param = Symbol;
 
 /// Cabeçalho de definição de macro.
 ///
-/// Exemplo: `ROT: MACRO &A, &B`
-/// - `name` = `ROT`
-/// - `params` = [`&A`, `&B`] (internados como símbolos)
-/// - `node_id` aponta para o span da diretiva inteira no fonte
+/// Forma canônica:
+/// ```text
+/// ROT: MACRO &A, &B
+/// ```
+///
+/// Representação:
+/// - `name` recebe o símbolo internado de `ROT`;
+/// - `params` recebe os símbolos internados de `A` e `B`, sem o prefixo `&`;
+/// - `node_id` referencia o span do cabeçalho inteiro.
+///
+/// Contrato no pipeline:
+/// - o parser garante que a label, `:`, `MACRO` e a lista de parâmetros estão
+///   sintaticamente válidos;
+/// - a etapa de execução usa este nó para registrar a macro na tabela de
+///   definições.
 #[derive(Debug, Clone)]
 pub(crate) struct MacroHeader {
+    /// `NodeId` associado ao cabeçalho inteiro.
+    ///
+    /// O span correspondente cobre a declaração de macro completa, incluindo
+    /// rótulo, keyword `MACRO` e lista de parâmetros formais.
     pub node_id: NodeId,
+    /// Nome da macro definida.
+    ///
+    /// Corresponde ao rótulo que antecede `MACRO` na forma canônica:
+    ///
+    /// ```text
+    /// NOME: MACRO &ARG
+    /// ```
     pub name: Symbol,
+    /// Parâmetros formais aceitos pela macro.
+    ///
+    /// Cada entrada guarda apenas o identificador internado, sem o `&`. O
+    /// prefixo é validado pelo parser e não faz parte do símbolo semântico do
+    /// parâmetro.
     pub params: Vec<Param>,
 }
 
 /// Definição completa de macro armazenada na tabela de macros.
 ///
-/// O corpo é mantido como linhas de tokens para permitir expansão posterior.
+/// Uma macro só entra nessa forma depois que o cabeçalho foi validado e o bloco
+/// até `ENDMACRO` foi coletado.
+///
+/// Contrato no pipeline:
+/// - `header` identifica nome e parâmetros formais;
+/// - `body` preserva a estrutura textual que será reemitida durante a expansão;
+/// - a execução da macro substitui referências a parâmetros por argumentos da
+///   chamada sem reparsear a definição inteira.
 #[derive(Debug, Clone)]
 pub(crate) struct Macro {
+    /// Cabeçalho que identifica a macro e seus parâmetros formais.
     pub header: MacroHeader,
+    /// Linhas do corpo da macro, já separadas em itens literais e referências
+    /// a parâmetros.
+    ///
+    /// O corpo permanece em uma forma próxima dos tokens originais porque a
+    /// expansão precisa reemitir código assembly preprocessado, não uma IR de
+    /// montagem final.
     pub body: Vec<MacroBodyLine>,
 }
 
+/// Sinal explícito associado a um literal numérico.
+///
+/// O lexer emite `+`/`-` como tokens independentes. Este enum normaliza esse
+/// prefixo quando um parser de diretiva reconhece a forma assinada de um
+/// número.
+///
+/// Forma canônica:
+/// ```text
+/// IF +1
+/// IF -2
+/// ```
+///
+/// O sinal representa apenas a informação sintática do prefixo. A conversão do
+/// literal completo para número da arquitetura acontece em etapa semântica.
 #[derive(Debug, Clone, Copy)]
 pub(in crate::preprocessor) enum Sign {
+    /// Prefixo `+`.
     Plus,
+    /// Prefixo `-`.
     Minus,
 }
 
@@ -86,27 +164,56 @@ impl From<&Sign> for &str {
     }
 }
 
-/// Operando simples aceito em diretivas do pré-processador.
+/// Literal numérico aceito em diretivas do pré-processador.
 ///
-/// Usado em diretivas que carregam expressão simples (`EQU` e `IF`), onde o
-/// valor pode precisar de interpretação semântica (ex.: parsing de literal
-/// numérico em base decimal/hex/bin).
+/// O lexer separa o sinal (`+`/`-`) do token numérico. Este enum recompõe a
+/// forma sintática do literal sem convertê-lo imediatamente para
+/// [`crate::assembler::Word`] ou [`crate::assembler::SignedWord`].
+///
+/// Formas canônicas:
+/// ```text
+/// VALUE EQU 10
+/// VALUE EQU +10
+/// VALUE EQU -10
+/// ```
+///
+/// Contrato no pipeline:
+/// - `Signed` preserva a presença explícita de `+` ou `-`;
+/// - `Unsigned` preserva a ausência de sinal;
+/// - a validação de base numérica e estouro pertence ao estágio semântico que
+///   consome o literal.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Number {
     /// Literal precedido por sinal explícito (`+N` ou `-N`).
-    Signed { sign: Sign, sym: Symbol },
+    Signed {
+        /// Sinal encontrado antes do literal numérico.
+        sign: Sign,
+        /// Símbolo internado do literal numérico sem o sinal.
+        sym: Symbol,
+    },
     /// Literal sem sinal explícito (`N`).
-    Unsigned { sym: Symbol },
+    Unsigned {
+        /// Símbolo internado do literal numérico.
+        sym: Symbol,
+    },
 }
 
 impl Number {
-    /// Retorna o símbolo internado associado ao literal.
+    /// Retorna o símbolo internado associado ao token numérico.
+    ///
+    /// Para literais assinados, o retorno é apenas o símbolo do número, sem o
+    /// sinal. O consumidor que precisa da semântica completa deve considerar a
+    /// variante (`Signed`/`Unsigned`) junto com este valor.
     pub(crate) fn sym(&self) -> Symbol {
         match self {
             Self::Signed { sym, .. } | Self::Unsigned { sym } => *sym,
         }
     }
     /// Responde se o número é positivo.
+    ///
+    /// Retorna `true` apenas para a forma explicitamente assinada com `+`.
+    /// Números sem sinal não são classificados aqui como positivos porque esta
+    /// função é usada para preservar a distinção sintática entre `+N` e `N`.
     pub(crate) fn is_positive(&self) -> bool {
         match self {
             Self::Signed {
@@ -117,16 +224,49 @@ impl Number {
     }
 }
 
+/// Operando simples aceito por diretivas do pré-processador.
+///
+/// Usado nas diretivas que recebem uma expressão de um único item, como:
+///
+/// ```text
+/// NAME EQU 1
+/// IF NAME
+/// ```
+///
+/// Contrato no pipeline:
+/// - `Number` representa literal imediato ainda em forma sintática;
+/// - `Ident` representa símbolo que deverá ser resolvido pela etapa semântica;
+/// - cada variante carrega um `NodeId` próprio para diagnóstico preciso do
+///   operando, separado do span da diretiva inteira.
 #[derive(Debug, Clone)]
 pub(crate) enum Operand {
-    /// Literal numérico internado (assinado ou não-assinado).
-    Number { number: Number, node_id: NodeId },
-    /// Identificador internado (nome simbólico/alias).
-    Ident { sym: Symbol, node_id: NodeId },
+    /// Literal numérico internado.
+    Number {
+        /// Valor numérico ainda em forma sintática.
+        ///
+        /// A conversão para [`crate::assembler::Word`] ou
+        /// [`crate::assembler::SignedWord`] acontece no estágio semântico que
+        /// consome a diretiva.
+        number: Number,
+        /// `NodeId` associado ao operando inteiro.
+        node_id: NodeId,
+    },
+    /// Identificador internado.
+    Ident {
+        /// Símbolo que deverá ser resolvido como alias ou condição nomeada pela
+        /// etapa semântica.
+        sym: Symbol,
+        /// `NodeId` associado ao identificador usado como operando.
+        node_id: NodeId,
+    },
 }
 
 impl Operand {
-    /// Retorna o `NodeId` do operando.
+    /// Retorna o `NodeId` associado ao operando.
+    ///
+    /// Útil para código semântico que precisa emitir erro sobre o operando
+    /// específico, independentemente de ele ter vindo como número ou
+    /// identificador.
     pub(crate) fn node_id(&self) -> NodeId {
         match self {
             Self::Number { node_id, .. } | Self::Ident { node_id, .. } => *node_id,
@@ -139,25 +279,49 @@ impl Operand {
 /// Diferente de [`Operand`], esse tipo representa substituição textual usada
 /// na expansão de macro call.
 ///
-/// Intenção de design:
-/// - preservar o lexema internado para reemissão como token;
-/// - manter rastreabilidade de diagnóstico por `NodeId`.
+/// Forma canônica:
+/// ```text
+/// ROT A, +1, LABEL
+/// ```
+///
+/// Contrato no pipeline:
+/// - argumentos são preservados em forma reemitível, pois a expansão de macro
+///   substitui parâmetros por tokens;
+/// - sinais explícitos continuam separados do literal numérico, mantendo o
+///   contrato léxico esperado pelos próximos parsers;
+/// - `node_id` permite diagnosticar o argumento original da chamada.
 #[derive(Debug, Clone)]
 pub(crate) enum MacroCallArg {
     /// Argumento numérico literal com sinal explícito (`+N` ou `-N`).
     SignedNumber {
+        /// Sinal textual informado na chamada.
         sign: Sign,
+        /// Símbolo internado do literal numérico sem o sinal.
         sym: Symbol,
+        /// `NodeId` associado ao argumento inteiro.
         node_id: NodeId,
     },
     /// Argumento numérico literal sem sinal explícito.
-    UnsignedNumber { sym: Symbol, node_id: NodeId },
+    UnsignedNumber {
+        /// Símbolo internado do literal numérico.
+        sym: Symbol,
+        /// `NodeId` associado ao argumento.
+        node_id: NodeId,
+    },
     /// Argumento identificador.
-    Ident { sym: Symbol, node_id: NodeId },
+    Ident {
+        /// Símbolo internado do identificador usado como argumento.
+        sym: Symbol,
+        /// `NodeId` associado ao argumento.
+        node_id: NodeId,
+    },
 }
 
 impl MacroCallArg {
     /// Retorna o `NodeId` associado ao argumento.
+    ///
+    /// Esse helper permite que a etapa semântica trate todas as formas de
+    /// argumento de modo uniforme ao produzir diagnósticos.
     pub(crate) fn node_id(&self) -> NodeId {
         match self {
             Self::Ident { node_id, .. }
@@ -169,12 +333,13 @@ impl MacroCallArg {
     /// Materializa o argumento como sequência de tokens usando o `span`
     /// informado.
     ///
-    /// Regras:
+    /// Regras de emissão:
     /// - `Ident` e `UnsignedNumber` geram um único token;
     /// - `SignedNumber` gera dois tokens (`Plus`/`Minus` e `Number`).
     ///
-    /// Isso preserva a estrutura léxica esperada pelos próximos parsers
-    /// (sinal separado do literal numérico).
+    /// O `span` recebido é aplicado aos tokens reemitidos. Na expansão de
+    /// macro, isso permite associar o trecho gerado à chamada que originou a
+    /// substituição.
     pub(crate) fn to_tokens_with_span(&self, span: Span) -> Vec<Token> {
         match self {
             Self::Ident { sym, .. } => vec![Token::new(TokenKind::Ident(*sym), span)],
@@ -193,66 +358,133 @@ impl MacroCallArg {
     }
 }
 
-/// Declaração de seção parseada (`SECTION TEXT` ou `SECTION DATA`).
+/// Declaração de seção parseada.
+///
+/// Formas canônicas:
+/// ```text
+/// SECTION TEXT
+/// SECTION DATA
+/// ```
+///
+/// Contrato no pipeline:
+/// - o parser garante que a diretiva possui exatamente `SECTION` seguido da
+///   seção esperada;
+/// - a execução altera o contexto de roteamento do preprocessador;
+/// - a diretiva não é emitida no [`crate::preprocessor::types::PreprocessedProgram`].
 #[derive(Debug, Clone)]
 pub(crate) struct SectionDecl {
     /// `NodeId` da diretiva inteira.
     pub node_id: NodeId,
-    /// Seção alvo.
+    /// Seção alvo que deve se tornar ativa.
     pub section: Section,
 }
 
 /// Declaração `EQU` parseada.
+///
+/// Forma canônica:
+/// ```text
+/// NAME EQU VALUE
+/// ```
+///
+/// Contrato no pipeline:
+/// - `alias` é o identificador definido pela diretiva;
+/// - `value` é mantido como [`Operand`] até a execução resolver número ou
+///   identificador;
+/// - a execução registra o alias na tabela de `EQU`.
 #[derive(Debug, Clone)]
 pub(crate) struct EquDecl {
     /// `NodeId` da diretiva inteira.
     pub node_id: NodeId,
-    /// Alias definido pela diretiva.
+    /// Símbolo internado do alias definido pela diretiva.
     pub alias: Symbol,
-    /// Valor associado ao alias.
+    /// Valor sintático associado ao alias.
     pub value: Operand,
 }
 
 /// Declaração `IF` parseada.
+///
+/// Forma canônica:
+/// ```text
+/// IF COND
+/// ```
+///
+/// Contrato no pipeline:
+/// - `cond` pode ser número literal ou identificador definido por `EQU`;
+/// - a execução resolve a condição e decide se a próxima linha lógica será
+///   mantida ou descartada;
+/// - este nó não guarda a linha condicionada, apenas a expressão da condição.
 #[derive(Debug, Clone)]
 pub(crate) struct IfDecl {
     /// `NodeId` da diretiva inteira.
     pub node_id: NodeId,
-    /// Condição usada para decidir inclusão/skip da próxima linha.
+    /// Condição usada para decidir inclusão ou descarte da próxima linha.
     pub cond: Operand,
 }
 
 /// Chamada de macro parseada.
+///
+/// Forma canônica:
+/// ```text
+/// NAME ARG1, ARG2
+/// ```
+///
+/// Contrato no pipeline:
+/// - `name` identifica a macro a buscar na tabela de definições;
+/// - `args` preserva os argumentos na ordem da chamada;
+/// - a execução valida aridade e expande o corpo da macro para linhas lógicas
+///   comuns.
 #[derive(Debug, Clone)]
 pub(crate) struct MacroCall {
     /// `NodeId` da chamada inteira.
     pub node_id: NodeId,
-    /// Nome da macro chamada.
+    /// Símbolo internado do nome da macro chamada.
     pub name: Symbol,
-    /// Argumentos posicionais.
+    /// Argumentos posicionais informados na chamada.
     pub args: Vec<MacroCallArg>,
 }
 
 /// Linha do corpo de macro em representação estruturada.
 ///
-/// Cada item pode ser literal (token bruto) ou referência a parâmetro formal.
+/// Forma canônica dentro de um bloco de macro:
+/// ```text
+/// LOAD &SRC
+/// COPY &FROM, &TO
+/// ```
+///
+/// Contrato no pipeline:
+/// - a linha guarda seu terminador original para preservar quebras na emissão;
+/// - `items` separa tokens literais de referências a parâmetros formais;
+/// - a expansão percorre os itens em ordem e materializa uma nova
+///   [`crate::preprocessor::types::LogicalLine`].
 #[derive(Debug, Clone)]
 pub(crate) struct MacroBodyLine {
-    /// `NodeId` da linha inteira do body.
+    /// `NodeId` da linha inteira do corpo.
     pub node_id: NodeId,
     /// Terminador original da linha no momento da definição da macro.
     ///
     /// Normalmente `NewLine`; pode ser sobrescrito na expansão quando a última
     /// linha da macro precisa herdar o terminador da linha de chamada.
     pub terminator: Token,
+    /// Itens sintáticos que compõem a linha do corpo.
+    ///
+    /// Literais são reemitidos como tokens; referências a parâmetros são
+    /// substituídas pelos argumentos correspondentes durante a expansão.
     pub items: Vec<MacroBodyItem>,
 }
 
 /// Unidade semântica de uma linha do corpo de macro.
+///
+/// Durante o parsing do corpo, cada trecho da linha é classificado como token
+/// literal ou referência a parâmetro formal. Essa distinção permite que a
+/// expansão substitua apenas `&PARAM`, preservando todo o restante da linha.
 #[derive(Debug, Clone)]
 pub(crate) enum MacroBodyItem {
     /// Token literal preservado como apareceu no body.
     Literal(Token),
-    /// Referência a parâmetro formal (ex.: `&ARG`) com `NodeId` próprio.
+    /// Referência a parâmetro formal.
+    ///
+    /// Campos:
+    /// - `Symbol`: identificador internado do parâmetro, sem o prefixo `&`;
+    /// - `NodeId`: span da referência inteira no corpo da macro.
     ParamRef(Symbol, NodeId),
 }
