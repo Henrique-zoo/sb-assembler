@@ -38,11 +38,9 @@ use crate::{
         PreprocessorErrorKind,
     },
     interner::Symbol,
+    language::numeric_literals::{NumberSign, NumericLiteral},
     lexer::{Span, Token, TokenKind},
-    preprocessor::{
-        Preprocessor,
-        ir::{Number, Operand, Sign},
-    },
+    preprocessor::{Preprocessor, ir::Operand},
 };
 
 mod equ_parser;
@@ -63,7 +61,7 @@ struct OperandParseError {
     span: Span,
 }
 
-impl Preprocessor {
+impl Preprocessor<'_> {
     /// Constrói um erro sintático genérico de diretiva com `span`.
     ///
     /// Parâmetros:
@@ -127,7 +125,7 @@ impl Preprocessor {
     /// let (tail, if_span) = self.consume_keyword(
     ///     line,
     ///     DirectiveKind::If,
-    ///     self.keywords.if_kw,
+    ///     self.language_symbols.preprocessor.if_,
     ///     Span::default(),
     /// )?;
     /// ```
@@ -460,11 +458,16 @@ impl Preprocessor {
     }
 
     fn parse_signed(&mut self, sign_tok: &Token, num_tok: &Token) -> Operand {
-        let sign = Sign::from(sign_tok);
+        let sign = match sign_tok.kind {
+            TokenKind::Plus => NumberSign::Plus,
+            TokenKind::Minus => NumberSign::Minus,
+            _ => unreachable!(),
+        };
+
         if let TokenKind::Number(sym) = num_tok.kind {
             let span = Self::span_from_bounds(sign_tok.span, num_tok.span);
             Operand::Number {
-                number: Number::Signed { sign, sym },
+                number: NumericLiteral::signed(sign, sym),
                 node_id: self.alloc_node_id(span),
             }
         } else {
@@ -475,7 +478,7 @@ impl Preprocessor {
     fn parse_unsigned(&mut self, num_tok: &Token) -> Operand {
         if let TokenKind::Number(sym) = num_tok.kind {
             Operand::Number {
-                number: Number::Unsigned { sym },
+                number: NumericLiteral::unsigned(sym),
                 node_id: self.alloc_node_id(num_tok.span),
             }
         } else {

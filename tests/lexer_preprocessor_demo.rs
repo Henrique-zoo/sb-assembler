@@ -14,7 +14,7 @@ mod lexer;
 mod preprocessor;
 
 use interner::Interner;
-use language::KeywordTable;
+use language::LanguageSymbols;
 use lexer::{Lexer, Token, TokenKind};
 use preprocessor::{LogicalLine, PreprocessedProgram, Preprocessor};
 
@@ -141,7 +141,7 @@ CLEAR AUX
 "#;
 
     let mut interner = Interner::new();
-    let keyword_table = KeywordTable::new(&mut interner);
+    let language_symbols = LanguageSymbols::new(&mut interner);
 
     let tokens = {
         let lexer = Lexer::new(source, &mut interner);
@@ -152,7 +152,7 @@ CLEAR AUX
     let lexer_output = render_lexer_output(&tokens, &interner);
     println!("===== LEXER OUTPUT =====\n{lexer_output}");
 
-    let mut preprocessor = Preprocessor::new(&mut interner, keyword_table);
+    let mut preprocessor = Preprocessor::new(&language_symbols);
     let preprocessed = preprocessor
         .process(tokens, &mut interner)
         .expect("preprocessor falhou no cenário de teste");

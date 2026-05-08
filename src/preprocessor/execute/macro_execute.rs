@@ -7,7 +7,7 @@ use crate::{
     },
 };
 
-impl Preprocessor {
+impl Preprocessor<'_> {
     /// Aplica os efeitos semânticos de um cabeçalho `MACRO` já parseado.
     ///
     /// A função recebe o iterador de linhas lógicas e consome o bloco da macro

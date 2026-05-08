@@ -32,7 +32,7 @@ use crate::{
     },
 };
 
-impl Preprocessor {
+impl Preprocessor<'_> {
     /// Faz o parsing de uma diretiva `EQU`.
     ///
     /// Forma canônica esperada:
@@ -78,7 +78,7 @@ impl Preprocessor {
         let (tail, fallback_span) = self.consume_keyword(
             tail,
             DirectiveKind::Equ,
-            self.keywords.equ_kw,
+            self.language_symbols.preprocessor.equ,
             fallback_span,
         )?;
 

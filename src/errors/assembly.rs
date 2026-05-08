@@ -5,7 +5,7 @@
 //! aqui descrevem falhas semânticas de montagem, como resolução de símbolos,
 //! conversão de literais e estouro de endereços.
 
-use crate::{interner::Symbol, lexer::Span};
+use crate::{interner::Symbol, language::instructions::Mnemonic, lexer::Span};
 
 /// Contexto em que um literal numérico está sendo interpretado.
 ///
@@ -68,6 +68,10 @@ pub(crate) enum AssemblyErrorKind {
         /// [`crate::assembler::Word`].
         address: usize,
     },
+    /// Instrução com [`Mnemonic`] inválido.
+    ///
+    /// É para ser `unrecheable!()`
+    InvalidMnemonic { mnemonic: Mnemonic },
 }
 
 /// Diagnóstico final emitido pela montagem.

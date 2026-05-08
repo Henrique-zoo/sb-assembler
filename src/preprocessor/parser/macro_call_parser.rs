@@ -11,7 +11,7 @@ use crate::{
     },
 };
 
-impl Preprocessor {
+impl Preprocessor<'_> {
     /// Parseia uma chamada de macro em formato posicional.
     ///
     /// Forma canônica esperada:

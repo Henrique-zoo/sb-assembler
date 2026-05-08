@@ -27,6 +27,7 @@
 
 use crate::{
     interner::Symbol,
+    language::numeric_literals::NumericLiteral,
     lexer::{Span, Token, TokenKind},
     preprocessor::types::Section,
 };
@@ -42,7 +43,13 @@ use crate::{
 /// - só é significativo dentro da instância de `Preprocessor` que o alocou;
 /// - aponta para o span do nó inteiro, não necessariamente para um token único.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct NodeId(pub u32);
+pub(crate) struct NodeId(
+    /// Índice na tabela lateral de spans mantida pelo `Preprocessor`.
+    ///
+    /// O valor não codifica significado semântico próprio; ele apenas permite
+    /// recuperar metadados associados ao nó.
+    pub u32,
+);
 
 /// Alias para parâmetro formal de macro.
 ///
@@ -145,6 +152,14 @@ pub(in crate::preprocessor) enum Sign {
     Minus,
 }
 
+/// Converte um token de sinal já validado em [`Sign`].
+///
+/// Pré-condição:
+/// - `value.kind` deve ser [`TokenKind::Plus`] ou [`TokenKind::Minus`].
+///
+/// O parser só chama essa conversão depois de reconhecer sintaticamente uma
+/// forma assinada. Qualquer outro token representa erro de chamada interna e
+/// dispara `unreachable!()`.
 impl From<&Token> for Sign {
     fn from(value: &Token) -> Self {
         match &value.kind {
@@ -155,71 +170,15 @@ impl From<&Token> for Sign {
     }
 }
 
+/// Materializa [`Sign`] como lexema textual.
+///
+/// Usado quando um valor assinado precisa voltar para uma forma tokenizável,
+/// por exemplo durante a expansão de macro ou parsing semântico de números.
 impl From<&Sign> for &str {
     fn from(value: &Sign) -> Self {
         match value {
             Sign::Plus => "+",
             Sign::Minus => "-",
-        }
-    }
-}
-
-/// Literal numérico aceito em diretivas do pré-processador.
-///
-/// O lexer separa o sinal (`+`/`-`) do token numérico. Este enum recompõe a
-/// forma sintática do literal sem convertê-lo imediatamente para
-/// [`crate::assembler::Word`] ou [`crate::assembler::SignedWord`].
-///
-/// Formas canônicas:
-/// ```text
-/// VALUE EQU 10
-/// VALUE EQU +10
-/// VALUE EQU -10
-/// ```
-///
-/// Contrato no pipeline:
-/// - `Signed` preserva a presença explícita de `+` ou `-`;
-/// - `Unsigned` preserva a ausência de sinal;
-/// - a validação de base numérica e estouro pertence ao estágio semântico que
-///   consome o literal.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum Number {
-    /// Literal precedido por sinal explícito (`+N` ou `-N`).
-    Signed {
-        /// Sinal encontrado antes do literal numérico.
-        sign: Sign,
-        /// Símbolo internado do literal numérico sem o sinal.
-        sym: Symbol,
-    },
-    /// Literal sem sinal explícito (`N`).
-    Unsigned {
-        /// Símbolo internado do literal numérico.
-        sym: Symbol,
-    },
-}
-
-impl Number {
-    /// Retorna o símbolo internado associado ao token numérico.
-    ///
-    /// Para literais assinados, o retorno é apenas o símbolo do número, sem o
-    /// sinal. O consumidor que precisa da semântica completa deve considerar a
-    /// variante (`Signed`/`Unsigned`) junto com este valor.
-    pub(crate) fn sym(&self) -> Symbol {
-        match self {
-            Self::Signed { sym, .. } | Self::Unsigned { sym } => *sym,
-        }
-    }
-    /// Responde se o número é positivo.
-    ///
-    /// Retorna `true` apenas para a forma explicitamente assinada com `+`.
-    /// Números sem sinal não são classificados aqui como positivos porque esta
-    /// função é usada para preservar a distinção sintática entre `+N` e `N`.
-    pub(crate) fn is_positive(&self) -> bool {
-        match self {
-            Self::Signed {
-                sign: Sign::Plus, ..
-            } => true,
-            _ => false,
         }
     }
 }
@@ -234,7 +193,8 @@ impl Number {
 /// ```
 ///
 /// Contrato no pipeline:
-/// - `Number` representa literal imediato ainda em forma sintática;
+/// - `Number` representa literal imediato ainda em forma sintática
+///   ([`NumericLiteral`]);
 /// - `Ident` representa símbolo que deverá ser resolvido pela etapa semântica;
 /// - cada variante carrega um `NodeId` próprio para diagnóstico preciso do
 ///   operando, separado do span da diretiva inteira.
@@ -247,7 +207,7 @@ pub(crate) enum Operand {
         /// A conversão para [`crate::assembler::Word`] ou
         /// [`crate::assembler::SignedWord`] acontece no estágio semântico que
         /// consome a diretiva.
-        number: Number,
+        number: NumericLiteral,
         /// `NodeId` associado ao operando inteiro.
         node_id: NodeId,
     },
@@ -479,7 +439,11 @@ pub(crate) struct MacroBodyLine {
 /// expansão substitua apenas `&PARAM`, preservando todo o restante da linha.
 #[derive(Debug, Clone)]
 pub(crate) enum MacroBodyItem {
-    /// Token literal preservado como apareceu no body.
+    /// Token literal preservado como apareceu no corpo da macro.
+    ///
+    /// O payload é reemitido sem substituição durante a expansão. Ele pode ser
+    /// qualquer token que não tenha sido classificado como referência a
+    /// parâmetro formal.
     Literal(Token),
     /// Referência a parâmetro formal.
     ///

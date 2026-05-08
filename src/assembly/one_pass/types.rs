@@ -57,3 +57,5 @@ pub(crate) struct ObjectProgram {
     // pub use_table: Vec<UseEntry>,
     // pub definition_table: Vec<DefinitionEntry>,
 }
+
+pub(crate) type Offset<T> = T;

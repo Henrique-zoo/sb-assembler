@@ -1,4 +1,5 @@
-pub mod keywords;
 pub mod instructions;
+pub(crate) mod numeric_literals;
+pub mod symbols;
 
-pub(crate) use keywords::KeywordTable;
+pub(crate) use symbols::LanguageSymbols;

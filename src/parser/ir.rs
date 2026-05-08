@@ -12,39 +12,59 @@
 //!    emitir palavras de máquina.
 //!
 //! Contrato dos tipos:
-//! - preservam símbolos internados (`Symbol`) em vez de strings;
-//! - guardam `Span` nos pontos relevantes para diagnósticos posteriores;
+//! - preservam símbolos internados ([`Symbol`]) em vez de strings;
+//! - usam [`NodeId`] para referenciar spans guardados no envelope do parser;
 //! - representam sintaxe já reconhecida, mas ainda sem resolução de endereço;
 //! - mantêm literais numéricos em forma sintática, deixando conversão e range
 //!   checking para a montagem.
 
-use crate::{interner::Symbol, language::instructions::Mnemonic, lexer::Span};
+use crate::{
+    interner::Symbol,
+    language::{instructions::Mnemonic, numeric_literals::NumericLiteral},
+};
+
+/// Identificador estável de um nó da IR do parser.
+///
+/// O [`NodeId`] desacopla os metadados de diagnóstico da representação principal
+/// da IR. O mapeamento entre identificador e [`crate::lexer::Span`] fica no
+/// envelope retornado pelo parser, em [`crate::parser::types::NodeSpans`].
+///
+/// Contrato:
+/// - deve ser tratado como identificador opaco;
+/// - só é significativo junto da tabela lateral que foi produzida pelo mesmo
+///   parser;
+/// - aponta para o span do nó inteiro, não necessariamente para um token único.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct NodeId(
+    /// Índice na tabela lateral de spans do parser.
+    pub u32,
+);
 
 /// Definição de rótulo em uma linha assembly.
 ///
 /// Forma canônica:
 ///
-/// ```text
+/// ```ignore
 /// LOOP: LOAD VALUE
 /// VALUE: SPACE
 /// ```
 ///
 /// Relação com a linguagem:
 /// - rótulos nomeiam endereços de instruções ou dados;
-/// - o parser guarda apenas o símbolo e o span;
+/// - o parser guarda apenas o símbolo e o identificador do span;
 /// - a montagem decide o endereço concreto usando o contador de posição.
 pub(crate) struct LabelDef {
     /// Símbolo internado do rótulo definido, sem o `:`.
     pub name: Symbol,
-    /// Span do identificador do rótulo.
-    pub span: Span,
+    /// `NodeId` do identificador do rótulo.
+    pub node_id: NodeId,
 }
 
 /// Referência simbólica usada como operando de endereço.
 ///
 /// Forma canônica:
 ///
-/// ```text
+/// ```ignore
 /// LOAD VALUE
 /// JMP LOOP
 /// ```
@@ -54,42 +74,31 @@ pub(crate) struct LabelDef {
 pub(crate) struct SymbolRef {
     /// Símbolo internado referenciado pelo operando.
     pub name: Symbol,
-    /// Span do identificador referenciado.
-    pub span: Span,
+    /// [`NodeId`] do identificador referenciado.
+    pub node_id: NodeId,
 }
 
-/// Sinal explícito de um literal numérico.
-///
-/// O lexer emite `+` e `-` como tokens independentes. O parser usa este enum
-/// para preservar a forma assinada do literal sem converter o valor ainda.
-pub(crate) enum Sign {
-    /// Prefixo `+`.
-    Plus,
-    /// Prefixo `-`.
-    Minus,
-}
-
-/// Literal numérico em forma sintática.
+/// Literal numérico parseado com metadado de diagnóstico.
 ///
 /// Formas canônicas:
 ///
-/// ```text
+/// ```ignore
 /// CONST 10
 /// CONST +10
 /// CONST -10
 /// ```
 ///
 /// Relação com a linguagem:
-/// - `sign` representa a presença explícita de `+` ou `-`;
-/// - `value` guarda o token numérico internado sem sinal;
+/// - `literal` preserva sinal opcional e símbolo internado em uma forma comum
+///   da linguagem;
+/// - `node_id` aponta para o literal completo no fonte por meio da tabela
+///   lateral do parser;
 /// - a conversão para palavra da arquitetura ocorre na montagem.
 pub(crate) struct NumberLiteral {
-    /// Sinal explícito do literal, quando presente.
-    pub sign: Option<Sign>,
-    /// Símbolo internado do token numérico sem sinal.
-    pub value: Symbol,
-    /// Span do literal completo.
-    pub span: Span,
+    /// Literal numérico sintático compartilhado entre parser e preprocessador.
+    pub literal: NumericLiteral,
+    /// [`NodeId`] do literal completo.
+    pub node_id: NodeId,
 }
 
 /// Operando que denota um endereço na máquina hipotética.
@@ -99,7 +108,7 @@ pub(crate) struct NumberLiteral {
 ///
 /// Formas canônicas:
 ///
-/// ```text
+/// ```ignore
 /// LOAD VALUE
 /// LOAD TABLE + 2
 /// STORE TABLE - 1
@@ -115,8 +124,8 @@ pub(crate) enum AddressOperand {
         base: SymbolRef,
         /// Deslocamento aplicado ao endereço base.
         offset: NumberLiteral,
-        /// Span do operando inteiro, incluindo base e deslocamento.
-        span: Span,
+        /// [`NodeId`] do operando inteiro, incluindo base e deslocamento.
+        node_id: NodeId,
     },
 }
 
@@ -128,7 +137,7 @@ pub(crate) enum AddressOperand {
 ///
 /// Formas canônicas:
 ///
-/// ```text
+/// ```ignore
 /// STOP
 /// LOAD VALUE
 /// COPY SRC, DST
@@ -140,8 +149,8 @@ pub(crate) enum Instruction {
     NoOperand {
         /// Mnemônico reconhecido da instrução.
         mnemonic: Mnemonic,
-        /// Span da instrução inteira.
-        span: Span,
+        /// [`NodeId`] da instrução inteira.
+        node_id: NodeId,
     },
     /// Instrução com um operando de endereço.
     ///
@@ -153,8 +162,8 @@ pub(crate) enum Instruction {
         mnemonic: Mnemonic,
         /// Operando de endereço consumido pela instrução.
         operand: AddressOperand,
-        /// Span da instrução inteira.
-        span: Span,
+        /// [`NodeId`] da instrução inteira.
+        node_id: NodeId,
     },
     /// Instrução com dois operandos de endereço.
     ///
@@ -167,8 +176,8 @@ pub(crate) enum Instruction {
         first: AddressOperand,
         /// Segundo operando de endereço.
         second: AddressOperand,
-        /// Span da instrução inteira.
-        span: Span,
+        /// [`NodeId`] da instrução inteira.
+        node_id: NodeId,
     },
 }
 
@@ -180,7 +189,7 @@ pub(crate) enum Instruction {
 ///
 /// Formas canônicas:
 ///
-/// ```text
+/// ```ignore
 /// VALUE SPACE
 /// TABLE SPACE 10
 /// CONST_VALUE CONST 5
@@ -192,14 +201,14 @@ pub(crate) enum DataDirective {
         ///
         /// Quando ausente, a diretiva reserva uma palavra.
         amount: Option<NumberLiteral>,
-        /// Span da diretiva inteira.
-        span: Span,
+        /// [`NodeId`] da diretiva inteira.
+        node_id: NodeId,
     },
     /// Emite uma palavra constante na seção de dados.
     Const {
         /// Valor literal a ser emitido.
         value: NumberLiteral,
-        /// Span da diretiva inteira.
-        span: Span,
+        /// [`NodeId`] da diretiva inteira.
+        node_id: NodeId,
     },
 }

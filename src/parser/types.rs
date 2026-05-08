@@ -10,7 +10,7 @@
 
 use crate::{
     lexer::Span,
-    parser::ir::{DataDirective, Instruction, LabelDef},
+    parser::ir::{DataDirective, Instruction, LabelDef, NodeId},
 };
 
 /// Programa assembly já parseado e separado por seção.
@@ -22,12 +22,65 @@ use crate::{
 /// Contrato no pipeline:
 /// - `text` contém apenas instruções da máquina hipotética;
 /// - `data` contém apenas diretivas de dados montáveis (`SPACE` e `CONST`);
+/// - `node_spans` preserva os spans referenciados pela IR por meio de
+///   [`NodeId`];
 /// - a montagem percorre esses vetores para emitir código e dados.
 pub(crate) struct ParsedProgram {
     /// Linhas parseadas da seção de texto.
     pub text: Vec<TextLine>,
     /// Linhas parseadas da seção de dados.
     pub data: Vec<DataLine>,
+    /// Tabela lateral de spans dos nós da IR.
+    pub node_spans: NodeSpans,
+}
+
+impl ParsedProgram {
+    /// Resolve o [`Span`] associado a um [`NodeId`] da IR deste programa.
+    pub(crate) fn span_of_node(&self, node_id: NodeId) -> Span {
+        self.node_spans.span_of(node_id)
+    }
+}
+
+/// Tabela lateral de spans dos nós produzidos pelo parser.
+///
+/// A IR do parser carrega apenas [`NodeId`]. Esta estrutura é o ponto que
+/// associa cada identificador ao [`Span`] original do fonte, permitindo que a
+/// montagem emita diagnósticos precisos sem inserir spans diretamente nos nós.
+#[derive(Debug, Default)]
+pub(crate) struct NodeSpans {
+    spans: Vec<Span>,
+}
+
+impl NodeSpans {
+    /// Cria uma tabela lateral vazia.
+    pub(crate) fn new() -> Self {
+        Self { spans: Vec::new() }
+    }
+
+    /// Registra o span de um nó e retorna o identificador correspondente.
+    ///
+    /// # Parâmetros
+    /// - `span`: intervalo de fonte correspondente ao nó recém-construído.
+    ///
+    /// # Retorno
+    /// - [`NodeId`] estável para esta tabela.
+    pub(crate) fn alloc(&mut self, span: Span) -> NodeId {
+        let id = NodeId(self.spans.len() as u32);
+        self.spans.push(span);
+        id
+    }
+
+    /// Resolve o [`Span`] associado a um [`NodeId`].
+    ///
+    /// Em um fluxo válido, todo identificador recebido aqui foi produzido por
+    /// [`Self::alloc`] na mesma tabela. O fallback com [`Span::default`] é
+    /// defensivo para manter o diagnóstico total mesmo diante de IR inválida.
+    pub(crate) fn span_of(&self, node_id: NodeId) -> Span {
+        self.spans
+            .get(node_id.0 as usize)
+            .copied()
+            .unwrap_or_default()
+    }
 }
 
 /// Linha parseada da seção `TEXT`.
@@ -59,7 +112,7 @@ pub(crate) struct ParsedLine<T> {
     pub label: Option<LabelDef>,
     /// Construção principal da linha, já validada para a seção correspondente.
     pub body: T,
-    /// Span da linha inteira usada para diagnosticar erros que pertencem à
+    /// `NodeId` da linha inteira, usado para diagnosticar erros que pertencem à
     /// declaração completa.
-    pub span: Span,
+    pub node_id: NodeId,
 }

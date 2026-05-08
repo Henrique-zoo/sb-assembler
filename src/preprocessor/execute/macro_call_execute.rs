@@ -26,7 +26,7 @@ use crate::{
     },
 };
 
-impl Preprocessor {
+impl Preprocessor<'_> {
     /// Expande uma chamada de macro já parseada para linhas lógicas.
     ///
     /// Forma canônica que chega aqui (já validada no parser):

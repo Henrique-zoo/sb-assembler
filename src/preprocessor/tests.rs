@@ -2,13 +2,13 @@ use super::*;
 
 use crate::{
     errors::{
-        DirectiveKind, DirectiveSyntaxErrorKind, EquDirectiveSyntaticErrorKind, ExpectedToken,
-        IfDirectiveSemanticErrorKind, IfDirectiveSyntaticErrorKind, InvalidArgKind,
-        MacroCallSemanticErrorKind, MacroCallSyntaticErrorKind, PreprocessorError,
-        PreprocessorErrorKind,
+        DirectiveKind, DirectiveSyntaxErrorKind, EquDirectiveSemanticErrorKind,
+        EquDirectiveSyntaticErrorKind, ExpectedToken, IfDirectiveSemanticErrorKind,
+        IfDirectiveSyntaticErrorKind, InvalidArgKind, MacroCallSemanticErrorKind,
+        MacroCallSyntaticErrorKind, PreprocessorError, PreprocessorErrorKind,
     },
     interner::Interner,
-    language::KeywordTable,
+    language::LanguageSymbols,
     lexer::{Lexer, Token, TokenKind},
 };
 
@@ -21,9 +21,9 @@ fn lex_ok(source: &str, interner: &mut Interner) -> Vec<Token> {
 
 fn preprocess_ok(source: &str) -> (PreprocessedProgram, Interner) {
     let mut interner = Interner::new();
-    let keyword_table = KeywordTable::new(&mut interner);
+    let language_symbols = LanguageSymbols::new(&mut interner);
     let tokens = lex_ok(source, &mut interner);
-    let mut preprocessor = Preprocessor::new(&mut interner, keyword_table);
+    let mut preprocessor = Preprocessor::new(&language_symbols);
 
     let lines = preprocessor
         .process(tokens, &mut interner)
@@ -34,9 +34,9 @@ fn preprocess_ok(source: &str) -> (PreprocessedProgram, Interner) {
 
 fn preprocess_err(source: &str) -> Vec<PreprocessorError> {
     let mut interner = Interner::new();
-    let keyword_table = KeywordTable::new(&mut interner);
+    let language_symbols = LanguageSymbols::new(&mut interner);
     let tokens = lex_ok(source, &mut interner);
-    let mut preprocessor = Preprocessor::new(&mut interner, keyword_table);
+    let mut preprocessor = Preprocessor::new(&language_symbols);
 
     preprocessor
         .process(tokens, &mut interner)
@@ -223,6 +223,64 @@ fn preprocesses_full_program_with_all_valid_directive_forms() {
         rendered_data,
         vec!["COUNTER SPACE", "TMP SPACE", "A SPACE", "B SPACE"]
     );
+}
+
+#[test]
+fn replaces_equ_aliases_only_in_data_directive_operands() {
+    let source = concat!(
+        "COUNT EQU 3\n",
+        "POS EQU +2\n",
+        "NEG EQU -1\n",
+        "SECTION DATA\n",
+        "VALUE: CONST COUNT\n",
+        "BUFFER: SPACE COUNT\n",
+        "POSVAL: CONST POS\n",
+        "NEGVAL: CONST NEG\n",
+        "SECTION TEXT\n",
+        "LOAD COUNT\n",
+    );
+
+    let (program, interner) = preprocess_ok(source);
+    let rendered_data = render_preprocessor_lines(&program.data, &interner);
+    let rendered_text = render_preprocessor_lines(&program.text, &interner);
+
+    assert_eq!(
+        rendered_data,
+        vec![
+            "VALUE : CONST 3",
+            "BUFFER : SPACE 3",
+            "POSVAL : CONST + 2",
+            "NEGVAL : CONST - 1",
+        ]
+    );
+    assert_eq!(rendered_text, vec!["LOAD COUNT"]);
+}
+
+#[test]
+fn reports_undefined_equ_alias_in_data_directive_operand() {
+    let source = concat!(
+        "SECTION DATA\n",
+        "VALUE: CONST MISSING\n",
+        "BUFFER: SPACE MISSING\n",
+    );
+
+    let errors = preprocess_err(source);
+    let rendered_output = render_preprocessor_errors(&errors);
+    print_preprocessor_case(
+        "reports_undefined_equ_alias_in_data_directive_operand",
+        source,
+        &rendered_output,
+    );
+
+    assert_eq!(errors.len(), 2);
+    assert!(errors.iter().all(|err| {
+        matches!(
+            err.kind,
+            PreprocessorErrorKind::InvalidEquDirectiveSemantic(
+                EquDirectiveSemanticErrorKind::UndefinedSymbol { .. }
+            )
+        )
+    }));
 }
 
 #[test]

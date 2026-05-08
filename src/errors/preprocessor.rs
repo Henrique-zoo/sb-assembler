@@ -91,8 +91,8 @@ pub(crate) enum EquDirectiveSyntaticErrorKind {
 /// Erros semânticos específicos da diretiva `EQU`.
 #[derive(Debug, Clone)]
 pub(crate) enum EquDirectiveSemanticErrorKind {
-    /// Valor semântico inválido para a regra da diretiva.
-    InvalidValue,
+    /// Alias `EQU` usado antes de ser definido.
+    UndefinedSymbol { symbol: Symbol },
     /// Literal numérico do valor não pôde ser parseado.
     InvalidValueNumber { value: Symbol },
     /// Número associado ao valor estoura o intervalo de 16 bits.
@@ -168,6 +168,8 @@ pub(crate) enum DirectiveSyntaxErrorKind {
 /// Inclui falhas de definição/expansão de macro e uso inválido de diretivas.
 #[derive(Debug, Clone)]
 pub(crate) enum PreprocessorErrorKind {
+    /// Linha na seção None não é  de nenhum tipo conhecido
+    UnknownLineSyntax,
     /// `ENDMACRO` apareceu fora de contexto de definição.
     UnexpectedEndMacro,
     /// Arquivo terminou com macro ainda aberta.

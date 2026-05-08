@@ -3,7 +3,7 @@ use crate::{
     preprocessor::Preprocessor,
 };
 
-impl Preprocessor {
+impl Preprocessor<'_> {
     /// Indica se a linha parece uma diretiva `EQU`.
     ///
     /// Forma canônica na linguagem:
@@ -24,7 +24,7 @@ impl Preprocessor {
     /// ```rust,ignore
     /// let span = Span { pos: 0, line: 1, column: 1, len: 1 };
     /// let alias = interner.entry("N").or_insert();
-    /// let equ_kw = preprocessor.keywords.equ_kw;
+    /// let equ_kw = preprocessor.language_symbols.preprocessor.equ;
     /// let one = interner.entry("1").or_insert();
     /// let add = interner.entry("ADD").or_insert();
     ///
@@ -63,7 +63,7 @@ impl Preprocessor {
                 Token { kind: TokenKind::Ident(_), .. },
                 Token { kind: TokenKind::Ident(sym), .. },
                 ..
-            ] if *sym == self.keywords.equ_kw
+            ] if *sym == self.language_symbols.preprocessor.equ
         ) || matches!(
             line,
             [
@@ -71,7 +71,32 @@ impl Preprocessor {
                 Token { kind: TokenKind::Colon, .. },
                 Token { kind: TokenKind::Ident(sym), .. },
                 ..
-            ] if *sym == self.keywords.equ_kw
+            ] if *sym == self.language_symbols.preprocessor.equ
+        )
+    }
+
+    /// Indica se a linha parece usar um alias `EQU` como operando de `DATA`.
+    ///
+    /// Forma reconhecida:
+    /// ```ignore
+    /// <label>: CONST <alias>
+    /// <label>: SPACE <alias>
+    /// ```
+    ///
+    /// Este detector é intencionalmente sintático: ele não consulta a tabela
+    /// `EQU`. A validação de existência do alias acontece no executor, para que
+    /// usos indefinidos possam gerar diagnóstico próprio.
+    pub(in crate::preprocessor) fn looks_like_equ_use(&self, line: &[Token]) -> bool {
+        matches!(
+            line,
+            [
+                Token { kind: TokenKind::Ident(_), .. },
+                Token { kind: TokenKind::Colon, .. },
+                Token { kind: TokenKind::Ident(directive), .. },
+                Token { kind: TokenKind::Ident(_), .. },
+                ..
+            ] if (*directive == self.language_symbols.data_directives.const_
+                || *directive == self.language_symbols.data_directives.space)
         )
     }
 }

@@ -3,7 +3,7 @@ use crate::{
     preprocessor::Preprocessor,
 };
 
-impl Preprocessor {
+impl Preprocessor<'_> {
     /// Indica se a linha parece uma tentativa de chamada de macro.
     ///
     /// Forma canônica da linguagem:
@@ -54,7 +54,7 @@ impl Preprocessor {
     /// ]));
     ///
     /// // Não candidata: começa com keyword
-    /// let if_kw = preprocessor.keywords.if_kw;
+    /// let if_kw = preprocessor.language_symbols.preprocessor.if_;
     /// assert!(!preprocessor.looks_like_macro_call(&[
     ///     Token::new(TokenKind::Ident(if_kw), span),
     /// ]));
@@ -66,7 +66,7 @@ impl Preprocessor {
             ..
         }) = line.first()
         {
-            !self.keyword_table.is_reserved(*sym)
+            !self.language_symbols.is_reserved(*sym)
         } else {
             false
         }

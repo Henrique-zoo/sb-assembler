@@ -39,7 +39,9 @@
 //!   linha, chamadas de macro podem expandir para várias linhas e linhas comuns
 //!   são emitidas para `PreprocessedProgram::text`;
 //! - `Section::Data`: região de dados. As linhas são preservadas para
-//!   `PreprocessedProgram::data` sem expansão de macro ou interpretação de `IF`.
+//!   `PreprocessedProgram::data` sem expansão de macro ou interpretação de `IF`;
+//!   aliases `EQU` em operandos de `CONST`/`SPACE` são materializados nessa
+//!   fronteira de emissão.
 //!
 //! `SECTION TEXT` e `SECTION DATA` são tratados antes do despacho por seção
 //! porque sua função é justamente alterar esse contexto. Essas diretivas não
@@ -107,22 +109,18 @@
 mod detection;
 mod execute;
 mod ir;
-mod number;
 mod parser;
 mod types;
 
-pub(in crate::preprocessor) use number::{
-    NumberParseError, parse_signed_number, parse_unsigned_number,
-};
 pub(in crate::preprocessor) use types::LogicalLineIter;
-pub(crate) use types::{Keywords, LogicalLine, PreprocessedProgram, Preprocessor};
+pub(crate) use types::{LogicalLine, PreprocessedProgram, Preprocessor};
 
 use std::collections::HashMap;
 
 use crate::{
     errors::{PreprocessorError, PreprocessorErrorKind},
     interner::Interner,
-    language::KeywordTable,
+    language::LanguageSymbols,
     lexer::{Span, Token},
     preprocessor::{ir::NodeId, types::Section},
 };
@@ -147,7 +145,7 @@ struct LineProcessResult {
     errors: Vec<PreprocessorError>,
 }
 
-impl Preprocessor {
+impl<'language> Preprocessor<'language> {
     /// Registra o `Span` de um nó da IR e retorna seu identificador.
     ///
     /// O pré-processador guarda spans em uma tabela lateral para que as
@@ -198,13 +196,11 @@ impl Preprocessor {
     ///
     /// A construção prepara o estado necessário para um fluxo completo de
     /// pré-processamento: tabelas semânticas vazias, seção inicial indefinida,
-    /// keywords internadas e tabela compartilhada de palavras reservadas.
+    /// vocabulário compartilhado e tabela lateral de spans vazia.
     ///
     /// # Parâmetros
-    /// - `interner`: tabela de símbolos que será compartilhada com lexer,
-    ///   parser e execução semântica;
-    /// - `keyword_table`: tabela de palavras reservadas da linguagem, usada
-    ///   principalmente para triagem semântica de chamadas de macro.
+    /// - `language_symbols`: vocabulário internado da linguagem, compartilhado
+    ///   com os demais estágios para comparação por [`crate::interner::Symbol`].
     ///
     /// # Estado inicial
     /// - `macros`: vazio;
@@ -213,10 +209,8 @@ impl Preprocessor {
     /// - `node_spans`: vazio.
     ///
     /// # Efeitos colaterais
-    /// Interna as keywords reconhecidas pelo pré-processador (`SECTION`,
-    /// `TEXT`, `DATA`, `MACRO`, `ENDMACRO`, `EQU` e `IF`) no `interner`
-    /// recebido. Isso permite comparar keywords por símbolo nas etapas
-    /// seguintes.
+    /// Não interna novos símbolos. O vocabulário fixo já deve ter sido criado em
+    /// [`LanguageSymbols::new`].
     ///
     /// # Retorno
     /// - `Preprocessor` inicializado e pronto para receber tokens em
@@ -225,26 +219,15 @@ impl Preprocessor {
     /// # Exemplo
     /// ```rust,ignore
     /// let mut interner = Interner::new();
-    /// let keywords = KeywordTable::new(&mut interner);
-    /// let preprocessor = Preprocessor::new(&mut interner, keywords);
+    /// let language_symbols = LanguageSymbols::new(&mut interner);
+    /// let preprocessor = Preprocessor::new(&language_symbols);
     /// ```
-    pub fn new(interner: &mut Interner, keyword_table: KeywordTable) -> Self {
-        let keywords = Keywords {
-            section_kw: interner.entry("SECTION").or_insert(),
-            text_kw: interner.entry("TEXT").or_insert(),
-            data_kw: interner.entry("DATA").or_insert(),
-            macro_kw: interner.entry("MACRO").or_insert(),
-            endmacro_kw: interner.entry("ENDMACRO").or_insert(),
-            equ_kw: interner.entry("EQU").or_insert(),
-            if_kw: interner.entry("IF").or_insert(),
-        };
-
+    pub fn new(language_symbols: &'language LanguageSymbols) -> Self {
         Self {
             macros: HashMap::new(),
             equs: HashMap::new(),
             current_section: Section::None,
-            keywords,
-            keyword_table,
+            language_symbols,
             node_spans: Vec::new(),
         }
     }
@@ -269,7 +252,10 @@ impl Preprocessor {
     /// 1. `tokens.into_logical_lines()` agrupa tokens por linha sob demanda.
     /// 2. Linhas `SECTION TEXT`/`SECTION DATA` atualizam `current_section`.
     /// 3. As demais linhas são despachadas para o handler da seção corrente.
-    /// 4. As linhas emitidas são anexadas a [`PreprocessedProgram::text`] ou
+    /// 4. Ao emitir para `DATA`, aliases `EQU` em operandos de `CONST`/`SPACE`
+    ///    são materializados como tokens numéricos; aliases inexistentes geram
+    ///    erro semântico.
+    /// 5. As linhas emitidas são anexadas a [`PreprocessedProgram::text`] ou
     ///    [`PreprocessedProgram::data`].
     ///
     /// # Retorno
@@ -292,8 +278,8 @@ impl Preprocessor {
     /// # Exemplo
     /// ```rust,ignore
     /// let mut interner = Interner::new();
-    /// let keywords = KeywordTable::new(&mut interner);
-    /// let mut preprocessor = Preprocessor::new(&mut interner, keywords);
+    /// let language_symbols = LanguageSymbols::new(&mut interner);
+    /// let mut preprocessor = Preprocessor::new(&language_symbols);
     ///
     /// let add = interner.entry("ADD").or_insert();
     /// let tokens = vec![
@@ -315,33 +301,51 @@ impl Preprocessor {
         let mut lines = tokens.into_logical_lines().peekable();
 
         while let Some(logical_line) = lines.next() {
-            let is_section_line = {
-                let line = logical_line.content.as_slice();
-                self.looks_like_text_section_line(line) || self.looks_like_data_section_line(line)
-            };
-
-            let line_result = if is_section_line {
-                self.process_section_line(logical_line.content.as_slice())
+            if logical_line.content.is_empty() {
+                continue;
+            }
+            
+            if self.looks_like_section_line(&logical_line.content) {
+                match self.parse_section_line(&logical_line.content) {
+                    Ok(section_decl) => self.execute_section_directive(section_decl),
+                    Err(err) => errors.push(err),
+                }
             } else {
                 match self.current_section {
                     Section::None => {
-                        self.process_none_section_line(logical_line, &mut lines, interner)
+                        let (
+                            LineProcessResult {
+                                output,
+                                errors: line_errors,
+                            },
+                            span
+                        ) = self.process_none_section_line(logical_line, &mut lines, interner);
+                        if !output.is_empty() {
+                            errors.push(PreprocessorError {
+                                kind: PreprocessorErrorKind::UnknownLineSyntax,
+                                span: span.unwrap(),
+                            })
+                        }
+                        errors.extend(line_errors);
                     }
                     Section::Text => {
-                        self.process_text_section_line(logical_line, &mut lines, interner)
+                        let LineProcessResult {
+                            output,
+                            errors: line_errors,
+                        } = self.process_text_section_line(logical_line, &mut lines, interner);
+                        text_lines.extend(output);
+                        errors.extend(line_errors);
                     }
-                    Section::Data => self.process_data_section_line(logical_line),
-                }
-            };
-
-            for emitted_line in line_result.output {
-                match self.current_section {
-                    Section::None => {}
-                    Section::Data => data_lines.push(emitted_line),
-                    Section::Text => text_lines.push(emitted_line),
+                    Section::Data => {
+                        let LineProcessResult {
+                            output,
+                            errors: line_errors,
+                        } = self.process_data_section_line(logical_line);
+                        data_lines.extend(output);
+                        errors.extend(line_errors);
+                    }
                 }
             }
-            errors.extend(line_result.errors);
         }
 
         if errors.is_empty() {
@@ -354,52 +358,6 @@ impl Preprocessor {
         }
     }
 
-    /// Processa uma linha de troca de seção.
-    ///
-    /// Forma esperada:
-    /// ```asm
-    /// SECTION TEXT
-    /// SECTION DATA
-    /// ```
-    ///
-    /// # Parâmetros
-    /// - `line`: conteúdo da linha lógica, sem o token `NewLine` terminador.
-    ///
-    /// # Retorno
-    /// - [`LineProcessResult`] com `output` sempre vazio;
-    /// - `errors` vazio quando a declaração é válida;
-    /// - `errors` com um diagnóstico sintático quando a linha parece uma troca
-    ///   de seção, mas está malformada.
-    ///
-    /// # Efeitos colaterais
-    /// Quando o parser retorna uma declaração válida, chama
-    /// `execute_section_directive` e atualiza `self.current_section`.
-    ///
-    /// # Contrato de orquestração
-    /// Esta função é chamada antes do despacho por seção. `SECTION` altera o
-    /// contexto usado pelas próximas linhas, mas não é preservada dentro de
-    /// [`PreprocessedProgram`].
-    fn process_section_line(&mut self, line: &[Token]) -> LineProcessResult {
-        let mut errors = Vec::new();
-
-        if self.looks_like_text_section_line(line) {
-            match self.parse_text_section_line(line) {
-                Ok(section_decl) => self.execute_section_directive(section_decl),
-                Err(err) => errors.push(err),
-            }
-        } else if self.looks_like_data_section_line(line) {
-            match self.parse_data_section_line(line) {
-                Ok(section_decl) => self.execute_section_directive(section_decl),
-                Err(err) => errors.push(err),
-            }
-        }
-
-        LineProcessResult {
-            output: Vec::new(),
-            errors,
-        }
-    }
-
     /// Processa uma linha enquanto o pré-processador está fora de uma seção.
     ///
     /// Nesse contexto, o fonte ainda não entrou em `SECTION TEXT` nem em
@@ -408,7 +366,7 @@ impl Preprocessor {
     /// ainda não há seção montável ativa.
     ///
     /// Formas reconhecidas:
-    /// ```asm
+    /// ```ignore
     /// NOME: MACRO &ARG
     ///     ; corpo consumido até ENDMACRO
     /// ENDMACRO
@@ -442,25 +400,25 @@ impl Preprocessor {
         logical_line: LogicalLine,
         lines: &mut LogicalLineIter,
         interner: &mut Interner,
-    ) -> LineProcessResult {
+    ) -> (LineProcessResult, Option<Span>) {
         let mut output = Vec::new();
         let mut errors = Vec::new();
         let line = logical_line.content.as_slice();
-
+        
         if self.looks_like_macro_header(line) {
             let Some(macro_header) = self
                 .parse_macro_header(line)
                 .map_err(|err| errors.push(err))
                 .ok()
             else {
-                return LineProcessResult { output, errors };
+                return (LineProcessResult { output, errors }, None);
             };
 
             if let Err(err) = self.execute_macro_header(macro_header, lines) {
                 errors.push(err);
             }
 
-            return LineProcessResult { output, errors };
+            return (LineProcessResult { output, errors }, None);
         }
 
         if self.looks_like_equ_line(line) {
@@ -469,18 +427,20 @@ impl Preprocessor {
                 .map_err(|err| errors.push(err))
                 .ok()
             else {
-                return LineProcessResult { output, errors };
+                return (LineProcessResult { output, errors }, None);
             };
 
             if let Err(err) = self.execute_equ_directive(equ_decl, interner) {
                 errors.push(err);
             }
 
-            return LineProcessResult { output, errors };
+            return (LineProcessResult { output, errors }, None);
         }
 
+        let span = logical_line.span();
+
         output.push(logical_line);
-        LineProcessResult { output, errors }
+        (LineProcessResult { output, errors }, Some(span))
     }
 
     /// Processa uma linha dentro de `SECTION TEXT`.
@@ -598,31 +558,44 @@ impl Preprocessor {
     /// Processa uma linha dentro de `SECTION DATA`.
     ///
     /// A seção de dados é tratada como conteúdo montável bruto neste estágio.
-    /// O pré-processador não interpreta `IF`, não expande chamadas de macro e
-    /// não tenta validar a gramática dos dados aqui.
+    /// O pré-processador não interpreta `IF` nem expande chamadas de macro.
+    /// Nesta fase, aliases `EQU` usados em operandos de `CONST`/`SPACE` são
+    /// materializados (substituídos por tokens numéricos) antes de a linha ser
+    /// emitida para `PreprocessedProgram::data`.
     ///
     /// Forma típica:
-    /// ```asm
+    /// ```ignore
     /// VALUE SPACE
     /// TABLE CONST 4
     /// ```
     ///
     /// # Parâmetros
-    /// - `logical_line`: linha atual de `SECTION DATA`.
+    /// - `logical_line`: a linha atual de `SECTION DATA`. A implementação pode
+    ///   modificar o conteúdo desta linha ao materializar aliases `EQU`.
     ///
     /// # Retorno
-    /// - [`LineProcessResult`] com `output` contendo exatamente a linha
-    ///   recebida;
-    /// - `errors` sempre vazio.
+    /// - [`LineProcessResult`] em que `output` contém a linha (possivelmente
+    ///   alterada) a ser emitida para `PreprocessedProgram::data`;
+    /// - `errors` pode conter diagnósticos gerados durante a materialização de
+    ///   `EQU` (por exemplo, alias inexistente ou erro semântico).
     ///
     /// # Efeitos colaterais
-    /// - nenhum. A função apenas preserva a linha para
-    ///   [`PreprocessedProgram::data`].
-    fn process_data_section_line(&mut self, logical_line: LogicalLine) -> LineProcessResult {
-        LineProcessResult {
-            output: vec![logical_line],
-            errors: Vec::new(),
+    /// - pode alterar `logical_line.content` ao substituir aliases `EQU`;
+    /// - não altera `self.current_section` nem registra definições; apenas
+    ///   prepara a linha para emissão em `data`.
+    fn process_data_section_line(&mut self, mut logical_line: LogicalLine) -> LineProcessResult {
+        let mut output = Vec::new();
+        let mut errors = Vec::new();
+
+        if self.looks_like_equ_use(&logical_line.content) {
+            if let Err(err) = self.replace_data_equ_use(&mut logical_line.content) {
+                errors.push(err)
+            }
         }
+
+        output.push(logical_line);
+
+        LineProcessResult { output, errors }
     }
 }
 

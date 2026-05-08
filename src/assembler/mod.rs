@@ -17,7 +17,7 @@ use crate::{
         PreprocessorError, PreprocessorErrorKind,
     },
     interner::Interner,
-    language::KeywordTable,
+    language::LanguageSymbols,
     lexer::Lexer,
     preprocessor::Preprocessor,
 };
@@ -42,20 +42,20 @@ pub struct Assembler<'a> {
     source: &'a str,
     /// Tabela de internamento compartilhada pelos estágios.
     interner: Interner,
-    /// Tabela com as keywords da linguagem
-    keyword_table: KeywordTable,
+    /// Vocabulário internado da linguagem.
+    language_symbols: LanguageSymbols,
 }
 
 impl<'a> Assembler<'a> {
     /// Cria uma instância de assembler para um fonte específico.
     pub fn new(source: &'a str) -> Self {
         let mut interner = Interner::new();
-        let keyword_table = KeywordTable::new(&mut interner);
+        let language_symbols = LanguageSymbols::new(&mut interner);
 
         Self {
             source,
             interner,
-            keyword_table,
+            language_symbols,
         }
     }
 
@@ -88,7 +88,7 @@ impl<'a> Assembler<'a> {
             }
         };
 
-        let mut preprocessor = Preprocessor::new(&mut self.interner, self.keyword_table);
+        let mut preprocessor = Preprocessor::new(&self.language_symbols);
 
         if let Err(errors) = preprocessor.process(tokens, &mut self.interner) {
             for err in &errors {
@@ -115,6 +115,8 @@ impl<'a> Assembler<'a> {
     /// diagnóstico interno.
     fn touch_preprocessor_error(err: &PreprocessorError) {
         match &err.kind {
+            PreprocessorErrorKind::UnknownLineSyntax => {}
+            
             PreprocessorErrorKind::UnexpectedEndMacro
             | PreprocessorErrorKind::UnterminatedMacro => {}
 
@@ -224,7 +226,7 @@ impl<'a> Assembler<'a> {
             },
 
             PreprocessorErrorKind::InvalidEquDirectiveSemantic(kind) => match kind {
-                EquDirectiveSemanticErrorKind::InvalidValue => {}
+                EquDirectiveSemanticErrorKind::UndefinedSymbol { symbol: _ } => {}
                 EquDirectiveSemanticErrorKind::InvalidValueNumber { value: _ } => {}
                 EquDirectiveSemanticErrorKind::ValueNumberOverflow { value: _ } => {}
             },

@@ -2,7 +2,7 @@
 //!
 //! Este módulo aplica o significado de `EQU` após o parsing sintático:
 //! - resolve o operando de valor (`Ident` ou `Number`);
-//! - registra `alias -> valor` na tabela de símbolos `EQU`.
+//! - registra `alias -> substituição` na tabela de símbolos `EQU`.
 //!
 //! Observação arquitetural:
 //! - o parser (`parser/equ_parser.rs`) valida a forma da linha;
@@ -11,16 +11,16 @@
 use crate::{
     errors::{EquDirectiveSemanticErrorKind, PreprocessorError, PreprocessorErrorKind},
     interner::{Interner, Symbol},
-    lexer::Span,
+    language::numeric_literals::{self, NumberParseError, NumericLiteral},
+    lexer::{Span, Token, TokenKind},
     preprocessor::{
-        NumberParseError, Preprocessor,
-        ir::{EquDecl, NodeId, Number, Operand},
-        parse_signed_number, parse_unsigned_number,
-        types::EquValue,
+        Preprocessor,
+        ir::{EquDecl, NodeId, Operand},
+        types::EquReplacement,
     },
 };
 
-impl Preprocessor {
+impl Preprocessor<'_> {
     /// Executa semanticamente uma diretiva `EQU` já parseada.
     ///
     /// Forma canônica que chega aqui (já validada no parser):
@@ -29,14 +29,14 @@ impl Preprocessor {
     /// ```
     ///
     /// Fluxo:
-    /// 1. resolve o operando com [`Self::resolve_operand`];
-    /// 2. grava o par `alias -> valor` em `self.equs`.
+    /// 1. resolve o operando com [`Self::resolve_equ_replacement`];
+    /// 2. grava o par `alias -> substituição` em `self.equs`.
     ///
     /// Retorno:
     /// - `Ok(())` quando a resolução e a escrita na tabela são bem-sucedidas.
     ///
     /// Erros:
-    /// - propaga erro semântico de [`Self::resolve_operand`] quando o valor
+    /// - propaga erro semântico de [`Self::resolve_equ_replacement`] quando o valor
     ///   é um identificador sem definição `EQU` prévia.
     ///
     /// Efeito colateral:
@@ -47,55 +47,66 @@ impl Preprocessor {
         equ_decl: EquDecl,
         interner: &Interner,
     ) -> Result<(), PreprocessorError> {
-        let operand_val = self.resolve_operand(&equ_decl.value, interner)?;
-        self.equs.insert(equ_decl.alias, operand_val);
+        let replacement = self.resolve_equ_replacement(&equ_decl.value, interner)?;
+        self.equs.insert(equ_decl.alias, replacement);
         Ok(())
     }
 
-    /// Resolve o valor simbólico de um operando de `EQU`.
+    /// Resolve a substituição associada a um operando de `EQU`.
     ///
     /// Regras:
-    /// - `Operand::Number`: parseia o literal para `i16`/`u16` e converte para
-    ///   [`EquValue`];
+    /// - `Operand::Number`: valida o literal com o parser numérico da linguagem
+    ///   e preserva sua forma reemitível;
     /// - `Operand::Ident { sym, .. }`: busca `sym` em `self.equs`.
     ///
     /// Retorno:
-    /// - `Ok(EquValue)` quando o operando pode ser resolvido.
+    /// - `Ok(EquReplacement)` quando o operando pode ser resolvido.
     ///
     /// Erros:
-    /// - `InvalidEquDirectiveSemantic(InvalidValue)` quando `Operand::Ident`
+    /// - `InvalidEquDirectiveSemantic(UndefinedSymbol)` quando `Operand::Ident`
     ///   referencia alias inexistente;
     /// - `InvalidEquDirectiveSemantic(InvalidValueNumber)` quando o literal de
     ///   `Operand::Number` não é parseável;
     /// - `InvalidEquDirectiveSemantic(ValueNumberOverflow)` quando o literal de
     ///   `Operand::Number` estoura `u16`/`i16`.
-    fn resolve_operand(
+    fn resolve_equ_replacement(
         &self,
         operand: &Operand,
         interner: &Interner,
-    ) -> Result<EquValue, PreprocessorError> {
+    ) -> Result<EquReplacement, PreprocessorError> {
         match operand {
-            Operand::Number { number, node_id } => match number {
-                Number::Signed { .. } => parse_signed_number(number, interner)
-                    .map(EquValue::Signed)
-                    .map_err(|err| {
-                        self.map_number_parse_err_to_equ_semantic_error(err, number.sym(), *node_id)
-                    }),
-                Number::Unsigned { .. } => parse_unsigned_number(number, interner)
-                    .map(EquValue::Unsigned)
-                    .map_err(|err| {
-                        self.map_number_parse_err_to_equ_semantic_error(err, number.sym(), *node_id)
-                    }),
-            },
+            Operand::Number {
+                number:
+                    NumericLiteral {
+                        sign: Some(sign),
+                        symbol,
+                    },
+                node_id,
+            } => numeric_literals::parse_signed_symbol(*sign, *symbol, interner)
+                .map(|_| EquReplacement::Signed {
+                    sign: *sign,
+                    number: *symbol,
+                })
+                .map_err(|err| {
+                    self.map_number_parse_err_to_equ_semantic_error(err, *symbol, *node_id)
+                }),
+            Operand::Number {
+                number: NumericLiteral { sign: None, symbol },
+                node_id,
+            } => numeric_literals::parse_unsigned_symbol(*symbol, interner)
+                .map(|_| EquReplacement::Unsigned { number: *symbol })
+                .map_err(|err| {
+                    self.map_number_parse_err_to_equ_semantic_error(err, *symbol, *node_id)
+                }),
             Operand::Ident { sym, node_id } => {
-                let &number = self.equs.get(sym).ok_or_else(|| {
+                let &replacement = self.equs.get(sym).ok_or_else(|| {
                     Self::equ_directive_semantic_error(
-                        EquDirectiveSemanticErrorKind::InvalidValue,
+                        EquDirectiveSemanticErrorKind::UndefinedSymbol { symbol: *sym },
                         self.span_of_node(*node_id),
                     )
                 })?;
 
-                Ok(number)
+                Ok(replacement)
             }
         }
     }
@@ -103,7 +114,7 @@ impl Preprocessor {
     /// Converte erro técnico de parsing numérico em erro semântico de `EQU`.
     ///
     /// Esse mapeamento mantém o pré-processador como fronteira de diagnóstico:
-    /// o parser numérico interno retorna [`NumberParseError`], e o estágio de
+    /// o módulo numérico da linguagem retorna [`NumberParseError`], e o estágio de
     /// execução converte para [`PreprocessorError`], com `span` do operando.
     fn map_number_parse_err_to_equ_semantic_error(
         &self,
@@ -135,5 +146,45 @@ impl Preprocessor {
             kind: PreprocessorErrorKind::InvalidEquDirectiveSemantic(kind),
             span,
         }
+    }
+
+    /// Substitui alias `EQU` usado como operando de diretiva `DATA`.
+    ///
+    /// Forma esperada:
+    /// ```ignore
+    /// <label>: CONST <alias>
+    /// <label>: SPACE <alias>
+    /// ```
+    ///
+    /// A substituição usa o span do ponto de uso, para que diagnósticos
+    /// posteriores apontem para a linha que consumiu o alias, não para a
+    /// declaração original do `EQU`.
+    ///
+    /// Retorno:
+    /// - `Ok(())` quando a linha não exige substituição ou quando o alias foi
+    ///   materializado com sucesso;
+    /// - `Err(InvalidEquDirectiveSemantic(UndefinedSymbol))` quando o operando
+    ///   parece um alias `EQU`, mas ainda não existe em `self.equs`.
+    pub(in crate::preprocessor) fn replace_data_equ_use(
+        &self,
+        line: &mut Vec<Token>,
+    ) -> Result<(), PreprocessorError> {
+        let Some(Token {
+            kind: TokenKind::Ident(sym),
+            span,
+        }) = line.get(3).copied()
+        else {
+            return Ok(());
+        };
+
+        let replacement = self.equs.get(&sym).ok_or_else(|| {
+            Self::equ_directive_semantic_error(
+                EquDirectiveSemanticErrorKind::UndefinedSymbol { symbol: sym },
+                span,
+            )
+        })?;
+
+        line.splice(3..4, replacement.to_tokens_with_span(span));
+        Ok(())
     }
 }

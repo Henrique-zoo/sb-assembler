@@ -7,7 +7,7 @@
 
 use crate::preprocessor::{Preprocessor, ir::SectionDecl};
 
-impl Preprocessor {
+impl Preprocessor<'_> {
     /// Aplica os efeitos de uma diretiva `SECTION` já parseada.
     ///
     /// Efeitos:

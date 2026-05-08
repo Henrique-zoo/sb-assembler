@@ -11,7 +11,7 @@ use crate::{
     },
 };
 
-impl Preprocessor {
+impl Preprocessor<'_> {
     /// Faz o parsing completo do cabeçalho de macro.
     ///
     /// Forma canônica na linguagem:
@@ -56,7 +56,7 @@ impl Preprocessor {
         let (tail, _) = self.consume_keyword(
             tail,
             DirectiveKind::MacroHeader,
-            self.keywords.macro_kw,
+            self.language_symbols.preprocessor.macro_,
             colon_span,
         )?;
         let params = self.parse_macro_params(tail)?;
@@ -98,7 +98,7 @@ impl Preprocessor {
         let (tail, _) = self.consume_keyword(
             line,
             DirectiveKind::EndMacro,
-            self.keywords.endmacro_kw,
+            self.language_symbols.preprocessor.endmacro,
             Span::default(),
         )?;
 

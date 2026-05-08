@@ -10,7 +10,7 @@ use crate::{
     },
 };
 
-impl Preprocessor {
+impl Preprocessor<'_> {
     /// Faz o parsing de uma diretiva `IF`.
     ///
     /// Forma canônica esperada:
@@ -40,7 +40,7 @@ impl Preprocessor {
         let (tail, fallback_span) = self.consume_keyword(
             line,
             DirectiveKind::If,
-            self.keywords.if_kw,
+            self.language_symbols.preprocessor.if_,
             Span::default(),
         )?;
         let (operand, tail, fallback_span) = self.parse_if_condition(tail, fallback_span)?;

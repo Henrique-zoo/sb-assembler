@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::assembler::Word;
 
 pub(crate) struct InstructionSet {
-    specs: HashMap<Mnemonic, InstructionSpec>,
+    pub specs: HashMap<Mnemonic, InstructionSpec>,
 }
 
 pub(crate) struct InstructionSpec {
@@ -18,6 +18,7 @@ pub(crate) enum OperandArity {
     Two,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash)]
 pub(crate) enum Mnemonic {
     Add,
     Sub,

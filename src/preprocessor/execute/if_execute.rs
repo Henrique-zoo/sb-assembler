@@ -9,21 +9,21 @@
 //!
 //! Observação arquitetural:
 //! - o parser (`parser/if_parser.rs`) valida forma;
-//! - este módulo resolve significado semântico da condição (`Number`/`Ident`).
+//! - este módulo resolve significado semântico da condição (`NumericLiteral`/`Ident`).
 
 use crate::{
     errors::{IfDirectiveSemanticErrorKind, PreprocessorError, PreprocessorErrorKind},
-    interner::Interner,
+    interner::{Interner, Symbol},
+    language::numeric_literals::NumberParseError,
     lexer::{Span, Token, TokenKind},
     preprocessor::{
-        LogicalLineIter, NumberParseError, Preprocessor,
-        ir::{IfDecl, Number, Operand},
-        parse_signed_number, parse_unsigned_number,
-        types::EquValue,
+        LogicalLineIter, Preprocessor,
+        ir::{IfDecl, NodeId, Operand},
+        types::EquReplacement,
     },
 };
 
-impl Preprocessor {
+impl Preprocessor<'_> {
     /// Executa semanticamente uma diretiva `IF` já parseada.
     ///
     /// Forma canônica que chega aqui (já validada no parser):
@@ -77,10 +77,10 @@ impl Preprocessor {
     /// Resolve o valor booleano da condição de `IF`.
     ///
     /// Regras:
-    /// - `Operand::Number(number)`: parseia como `i16`/`u16` conforme a variante
-    ///   (`Signed`/`Unsigned`) de `number`;
-    /// - `Operand::Ident(sym)`: procura `sym` na tabela `EQU` e avalia o valor
-    ///   resolvido (`EquValue`).
+    /// - `Operand::Number(number)`: parseia como `i16`/`u16` conforme a presença
+    ///   de sinal explícito no literal;
+    /// - `Operand::Ident(sym)`: procura `sym` na tabela `EQU` e avalia a
+    ///   substituição resolvida.
     ///
     /// Convenção booleana:
     /// - `0` => `false`;
@@ -100,32 +100,18 @@ impl Preprocessor {
     ) -> Result<bool, PreprocessorError> {
         match condition {
             Operand::Number { number, node_id } => {
-                let value = match number {
-                    Number::Signed { .. } => {
-                        parse_signed_number(number, interner).map(|v| v as i32)
-                    }
-                    Number::Unsigned { .. } => {
-                        parse_unsigned_number(number, interner).map(|v| v as i32)
-                    }
-                }
-                .map_err(|err| match err {
-                    NumberParseError::Overflow => Self::if_directive_semantic_error(
-                        IfDirectiveSemanticErrorKind::ConditionNumberOverflow {
-                            value: number.sym(),
-                        },
-                        self.span_of_node(*node_id),
-                    ),
-                    NumberParseError::InvalidNumber => Self::if_directive_semantic_error(
-                        IfDirectiveSemanticErrorKind::InvalidConditionNumber {
-                            value: number.sym(),
-                        },
-                        self.span_of_node(*node_id),
-                    ),
+                let replacement = EquReplacement::from_numeric_literal(*number);
+                let value = replacement.evaluate(interner).map_err(|err| {
+                    self.map_number_parse_err_to_if_semantic_error(
+                        err,
+                        replacement.number_symbol(),
+                        *node_id,
+                    )
                 })?;
                 Ok(value != 0)
             }
             Operand::Ident { sym, node_id } => {
-                let equ_value = self.equs.get(sym).ok_or_else(|| {
+                let replacement = self.equs.get(sym).ok_or_else(|| {
                     Self::if_directive_semantic_error(
                         IfDirectiveSemanticErrorKind::UndefinedIdentifier {
                             ident: TokenKind::Ident(*sym),
@@ -134,13 +120,35 @@ impl Preprocessor {
                     )
                 })?;
 
-                let value = match equ_value {
-                    EquValue::Signed(v) => *v as i32,
-                    EquValue::Unsigned(v) => *v as i32,
-                };
+                let value = replacement.evaluate(interner).map_err(|err| {
+                    self.map_number_parse_err_to_if_semantic_error(
+                        err,
+                        replacement.number_symbol(),
+                        *node_id,
+                    )
+                })?;
 
                 Ok(value != 0)
             }
+        }
+    }
+
+    /// Converte erro técnico de parsing numérico em erro semântico de `IF`.
+    fn map_number_parse_err_to_if_semantic_error(
+        &self,
+        err: NumberParseError,
+        value: Symbol,
+        node_id: NodeId,
+    ) -> PreprocessorError {
+        match err {
+            NumberParseError::Overflow => Self::if_directive_semantic_error(
+                IfDirectiveSemanticErrorKind::ConditionNumberOverflow { value },
+                self.span_of_node(node_id),
+            ),
+            NumberParseError::InvalidNumber => Self::if_directive_semantic_error(
+                IfDirectiveSemanticErrorKind::InvalidConditionNumber { value },
+                self.span_of_node(node_id),
+            ),
         }
     }
 
