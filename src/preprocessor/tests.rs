@@ -121,6 +121,27 @@ fn contains_error(
 }
 
 #[test]
+fn does_not_detect_labeled_instruction_as_macro_call() {
+    let mut interner = Interner::new();
+    let language_symbols = LanguageSymbols::new(&mut interner);
+    let tokens = lex_ok("LABEL: ADD VALUE\n", &mut interner);
+    let line = &tokens[..tokens.len() - 1];
+    let preprocessor = Preprocessor::new(&language_symbols);
+
+    assert!(!preprocessor.looks_like_macro_call(line));
+}
+
+#[test]
+fn preserves_labeled_instruction_in_text_section() {
+    let source = concat!("SECTION TEXT\n", "LABEL: ADD VALUE\n");
+
+    let (program, interner) = preprocess_ok(source);
+    let rendered_text = render_preprocessor_lines(&program.text, &interner);
+
+    assert_eq!(rendered_text, vec!["LABEL : ADD VALUE"]);
+}
+
+#[test]
 fn preprocesses_full_program_with_all_valid_directive_forms() {
     let source = concat!(
         "NOARG: MACRO\n",

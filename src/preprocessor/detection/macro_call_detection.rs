@@ -6,30 +6,33 @@ use crate::{
 impl Preprocessor<'_> {
     /// Indica se a linha parece uma tentativa de chamada de macro.
     ///
-    /// Forma canônica da linguagem:
+    /// Forma capturada por este detector:
     /// ```ignore
     /// <MacroName>
     /// <MacroName> <Arg1>, <Arg2>, ...
     /// ```
     ///
     /// Critério de triagem (heurístico):
-    /// - o único critério é: o primeiro token da linha deve ser `Ident(sym)`;
+    /// - a linha deve começar com `Ident(sym)`;
     /// - esse `sym` não pode ser keyword;
-    /// - ignora o restante da linha nesta etapa.
+    /// - se houver um segundo token, ele não pode ser `:`.
     ///
     /// Motivação:
     /// - a detecção aqui é intencionalmente permissiva para não perder
     ///   tentativas de chamada malformadas;
+    /// - o filtro contra `:` evita rotear linhas com prefixo de label
+    ///   (`<Ident>:`) como chamadas de macro;
     /// - a validação estrita da sintaxe dos argumentos pertence ao parser de
     ///   macro call (`parse_macro_call` / `parse_macro_call_args`), que consegue
     ///   emitir diagnósticos específicos.
     ///
     /// Limites de responsabilidade:
     /// - **não** valida a lista de argumentos;
+    /// - **não** verifica se a macro existe;
     /// - **não** executa expansão.
     ///
     /// Em outras palavras, este detector só responde:
-    /// "essa linha começa com identificador não-keyword?".
+    /// "essa linha começa com identificador não-keyword sem prefixo de label?".
     ///
     /// # Exemplos
     /// ```rust,ignore
@@ -43,9 +46,10 @@ impl Preprocessor<'_> {
     ///     Token::new(TokenKind::Ident(r1), span),
     /// ]));
     ///
-    /// // Candidata mínima (somente nome)
+    /// // Candidata malformada, mas roteável para o parser de chamadas
     /// assert!(preprocessor.looks_like_macro_call(&[
     ///     Token::new(TokenKind::Ident(rot), span),
+    ///     Token::new(TokenKind::Comma, span),
     /// ]));
     ///
     /// // Não candidata: começa com pontuação
@@ -59,16 +63,34 @@ impl Preprocessor<'_> {
     ///     Token::new(TokenKind::Ident(if_kw), span),
     /// ]));
     ///
+    /// // Candidata mínima (somente nome)
+    /// assert!(preprocessor.looks_like_macro_call(&[
+    ///     Token::new(TokenKind::Ident(rot), span),
+    /// ]));
+    ///
+    /// // Não candidata: prefixo de label
+    /// assert!(!preprocessor.looks_like_macro_call(&[
+    ///     Token::new(TokenKind::Ident(rot), span),
+    ///     Token::new(TokenKind::Colon, span),
+    /// ]));
+    ///
     /// ```
     pub(in crate::preprocessor) fn looks_like_macro_call(&self, line: &[Token]) -> bool {
-        if let Some(Token {
-            kind: TokenKind::Ident(sym),
-            ..
-        }) = line.first()
-        {
-            !self.language_symbols.is_reserved(*sym)
-        } else {
-            false
+        match line {
+            [
+                Token {
+                    kind: TokenKind::Ident(sym),
+                    ..
+                },
+                tail @ ..,
+            ] if !self.language_symbols.is_reserved(*sym) => !matches!(
+                tail.first(),
+                Some(Token {
+                    kind: TokenKind::Colon,
+                    ..
+                })
+            ),
+            _ => false,
         }
     }
 }

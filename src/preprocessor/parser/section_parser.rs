@@ -34,7 +34,10 @@ impl Preprocessor<'_> {
     /// - aloca um `NodeId` cobrindo a diretiva completa;
     /// - não altera `current_section`. Esse efeito pertence a
     ///   [`Self::execute_section_directive`].
-    pub(in crate::preprocessor) fn parse_section_line(&mut self, line: &[Token]) -> Result<SectionDecl, PreprocessorError> {
+    pub(in crate::preprocessor) fn parse_section_line(
+        &mut self,
+        line: &[Token],
+    ) -> Result<SectionDecl, PreprocessorError> {
         let text_symbol = self.language_symbols.sections.text;
         let data_symbol = self.language_symbols.sections.data;
 

@@ -304,7 +304,7 @@ impl<'language> Preprocessor<'language> {
             if logical_line.content.is_empty() {
                 continue;
             }
-            
+
             if self.looks_like_section_line(&logical_line.content) {
                 match self.parse_section_line(&logical_line.content) {
                     Ok(section_decl) => self.execute_section_directive(section_decl),
@@ -318,7 +318,7 @@ impl<'language> Preprocessor<'language> {
                                 output,
                                 errors: line_errors,
                             },
-                            span
+                            span,
                         ) = self.process_none_section_line(logical_line, &mut lines, interner);
                         if !output.is_empty() {
                             errors.push(PreprocessorError {
@@ -404,7 +404,7 @@ impl<'language> Preprocessor<'language> {
         let mut output = Vec::new();
         let mut errors = Vec::new();
         let line = logical_line.content.as_slice();
-        
+
         if self.looks_like_macro_header(line) {
             let Some(macro_header) = self
                 .parse_macro_header(line)
