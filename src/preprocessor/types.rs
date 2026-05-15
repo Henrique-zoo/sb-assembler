@@ -97,7 +97,7 @@ impl LogicalLine {
                     pos: first.span.pos,
                     line: first.span.line,
                     column: first.span.column,
-                    len: end.saturating_sub(first.span.pos)
+                    len: end.saturating_sub(first.span.pos),
                 }
             }
             _ => self.terminator.span,

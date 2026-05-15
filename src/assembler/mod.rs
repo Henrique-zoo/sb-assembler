@@ -116,7 +116,7 @@ impl<'a> Assembler<'a> {
     fn touch_preprocessor_error(err: &PreprocessorError) {
         match &err.kind {
             PreprocessorErrorKind::UnknownLineSyntax => {}
-            
+
             PreprocessorErrorKind::UnexpectedEndMacro
             | PreprocessorErrorKind::UnterminatedMacro => {}
 
