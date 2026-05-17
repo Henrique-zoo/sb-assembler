@@ -596,6 +596,10 @@ fn test_parse_text() {
                         span: Span::default(),
                     },
                     Token {
+                        kind: TokenKind::Comma,
+                        span: Span::default(),
+                    },
+                    Token {
                         kind: TokenKind::Ident(aux2),
                         span: Span::default(),
                     },
