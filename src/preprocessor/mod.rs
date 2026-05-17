@@ -110,8 +110,10 @@ mod detection;
 mod execute;
 mod ir;
 mod parser;
+mod render;
 mod types;
 
+pub(crate) use render::PreprocessorRenderer;
 pub(in crate::preprocessor) use types::LogicalLineIter;
 pub(crate) use types::{LogicalLine, PreprocessedProgram, Preprocessor};
 

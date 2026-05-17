@@ -16,10 +16,11 @@ use crate::{
         MacroCallSemanticErrorKind, MacroCallSyntaticErrorKind, MacroHeaderErrorKind,
         PreprocessorError, PreprocessorErrorKind,
     },
+    file_creator::FileCreator,
     interner::Interner,
     language::LanguageSymbols,
     lexer::Lexer,
-    preprocessor::Preprocessor,
+    preprocessor::{PreprocessedProgram, Preprocessor},
 };
 
 /// Tipo base de palavra da arquitetura alvo (16 bits).
@@ -95,6 +96,34 @@ impl<'a> Assembler<'a> {
                 Self::touch_preprocessor_error(err);
             }
         }
+    }
+
+    pub fn generate_preprocessed_file(mut self, file_name: &str) {
+        let normalized_source = self.source.to_ascii_uppercase();
+        let lexer = Lexer::new(normalized_source.as_str(), &mut self.interner);
+        let tokens = lexer.collect::<Result<Vec<_>, _>>().unwrap_or_else(|err| {
+            Self::touch_lexer_error(&err);
+            Vec::new()
+        });
+
+        let mut preprocessor = Preprocessor::new(&self.language_symbols);
+        let preprocessed_tokens = preprocessor
+            .process(tokens, &mut self.interner)
+            .unwrap_or_else(|err| {
+                for err in &err {
+                    Self::touch_preprocessor_error(err);
+                }
+                PreprocessedProgram {
+                    text: Vec::new(),
+                    data: Vec::new(),
+                }
+            });
+
+        FileCreator::create_preprocessed_output_file(
+            file_name,
+            &preprocessed_tokens,
+            &self.interner,
+        );
     }
 
     /// Lê explicitamente os campos de erro léxico para diagnóstico interno.
