@@ -57,7 +57,7 @@ pub(crate) struct NodeId(
 /// macro.
 ///
 /// Forma canônica:
-/// ```text
+/// ```ignore
 /// ROT: MACRO &A, &B
 /// ```
 ///
@@ -70,7 +70,7 @@ pub(crate) type Param = Symbol;
 /// Cabeçalho de definição de macro.
 ///
 /// Forma canônica:
-/// ```text
+/// ```ignore
 /// ROT: MACRO &A, &B
 /// ```
 ///
@@ -95,7 +95,7 @@ pub(crate) struct MacroHeader {
     ///
     /// Corresponde ao rótulo que antecede `MACRO` na forma canônica:
     ///
-    /// ```text
+    /// ```ignore
     /// NOME: MACRO &ARG
     /// ```
     pub name: Symbol,
@@ -137,7 +137,7 @@ pub(crate) struct Macro {
 /// número.
 ///
 /// Forma canônica:
-/// ```text
+/// ```ignore
 /// IF +1
 /// IF -2
 /// ```
@@ -187,7 +187,7 @@ impl From<&Sign> for &str {
 ///
 /// Usado nas diretivas que recebem uma expressão de um único item, como:
 ///
-/// ```text
+/// ```ignore
 /// NAME EQU 1
 /// IF NAME
 /// ```
@@ -240,7 +240,7 @@ impl Operand {
 /// na expansão de macro call.
 ///
 /// Forma canônica:
-/// ```text
+/// ```ignore
 /// ROT A, +1, LABEL
 /// ```
 ///
@@ -321,7 +321,7 @@ impl MacroCallArg {
 /// Declaração de seção parseada.
 ///
 /// Formas canônicas:
-/// ```text
+/// ```ignore
 /// SECTION TEXT
 /// SECTION DATA
 /// ```
@@ -342,7 +342,7 @@ pub(crate) struct SectionDecl {
 /// Declaração `EQU` parseada.
 ///
 /// Forma canônica:
-/// ```text
+/// ```ignore
 /// NAME EQU VALUE
 /// ```
 ///
@@ -364,7 +364,7 @@ pub(crate) struct EquDecl {
 /// Declaração `IF` parseada.
 ///
 /// Forma canônica:
-/// ```text
+/// ```ignore
 /// IF COND
 /// ```
 ///
@@ -384,7 +384,7 @@ pub(crate) struct IfDecl {
 /// Chamada de macro parseada.
 ///
 /// Forma canônica:
-/// ```text
+/// ```ignore
 /// NAME ARG1, ARG2
 /// ```
 ///
@@ -406,7 +406,7 @@ pub(crate) struct MacroCall {
 /// Linha do corpo de macro em representação estruturada.
 ///
 /// Forma canônica dentro de um bloco de macro:
-/// ```text
+/// ```ignore
 /// LOAD &SRC
 /// COPY &FROM, &TO
 /// ```

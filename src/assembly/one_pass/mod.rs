@@ -13,8 +13,7 @@
 use crate::{
     assembler::Word,
     assembly::one_pass::types::{
-        AssemblyArtifacts, ObjectProgram, Offset, PatchSite, PendingProgram, SymbolEntry,
-        SymbolTable,
+        AssemblyArtifacts, Offset, PatchSite, PendingProgram, SymbolEntry, SymbolTable,
     },
     errors::{AssemblyError, AssemblyErrorKind, NumberContext},
     interner::{Interner, Symbol},

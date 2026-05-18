@@ -166,7 +166,7 @@ impl LanguageSymbols {
         let mut mnemonic_instruction_map = HashMap::<Symbol, Mnemonic>::new();
         mnemonic_instruction_map.insert(instructions.add, Mnemonic::Add);
         mnemonic_instruction_map.insert(instructions.sub, Mnemonic::Sub);
-        mnemonic_instruction_map.insert(instructions.mult, Mnemonic::Mult);
+        mnemonic_instruction_map.insert(instructions.mult, Mnemonic::Mul);
         mnemonic_instruction_map.insert(instructions.div, Mnemonic::Div);
         mnemonic_instruction_map.insert(instructions.jmp, Mnemonic::Jmp);
         mnemonic_instruction_map.insert(instructions.jmpn, Mnemonic::Jmpn);

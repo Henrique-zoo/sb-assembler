@@ -1,7 +1,9 @@
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
 
-#[path = "../src/assembler/mod.rs"]
-mod assembler;
+mod assembler {
+    pub type SignedWord = i16;
+    pub type Word = u16;
+}
 #[path = "../src/errors/mod.rs"]
 mod errors;
 #[path = "../src/interner/mod.rs"]
@@ -104,7 +106,7 @@ fn render_preprocessed_output(program: &PreprocessedProgram, interner: &Interner
 }
 
 #[test]
-fn lexer_and_preprocessor_demo() {
+fn lexer_and_preprocessor_integration() {
     let source = r#"; ------------------------------------------------------------
 ; CENARIO: preprocessor completo com MACRO, EQU, IF e seções
 ; ------------------------------------------------------------

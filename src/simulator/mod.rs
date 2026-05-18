@@ -3,13 +3,13 @@
 //! Este módulo é o ponto de entrada do estágio que executa o `.obj` emitido
 //! pela montagem. Ele não conhece fonte assembly, seções, rótulos, macros ou
 //! diretivas montáveis: sua entrada já é um `ObjectProgram` resolvido, ou um
-//! arquivo `.obj` binário que pode ser convertido nessa estrutura.
+//! arquivo `.obj` textual que pode ser convertido nessa estrutura.
 //!
 //! ## Papel no pipeline
 //!
 //! A simulação começa depois que o pipeline de montagem já transformou o
 //! programa em palavras de máquina. O contrato esperado é:
-//! 1. o arquivo `.obj` contém apenas palavras de 16 bits;
+//! 1. o arquivo `.obj` contém apenas bytes escritos como números textuais;
 //! 2. as referências simbólicas já foram resolvidas para endereços numéricos;
 //! 3. o vetor de palavras representa `TEXT` seguido de `DATA`;
 //! 4. a execução inicia no endereço `0` e termina ao encontrar `STOP`.
@@ -21,19 +21,22 @@
 //!
 //! ## Formato do `.obj`
 //!
-//! O arquivo objeto é tratado como binário, não como texto. Cada [`Word`] ocupa
-//! dois bytes e é lida em little-endian, isto é, o byte menos significativo vem
-//! primeiro. Por isso, o tamanho do arquivo precisa ser múltiplo de dois.
+//! O arquivo objeto é tratado como texto: cada token separado por espaço deve
+//! representar um byte decimal no intervalo de `0` a `255`. A cada dois bytes,
+//! o simulador reconstrói uma [`Word`] em little-endian, isto é, o byte menos
+//! significativo vem primeiro. Por isso, a quantidade de bytes textuais precisa
+//! ser múltipla de dois.
 //!
 //! A sequência abaixo representa as palavras `10`, `7` e `14`:
 //!
 //! ```text
-//! 0A 00 07 00 0E 00
+//! 10 0 7 0 14 0
 //! ```
 //!
-//! Se o arquivo terminar com um byte solto, a conversão falha com
-//! [`SimulationError::MisalignedObjectFile`], porque não há uma palavra de 16
-//! bits completa para carregar.
+//! Se algum token não couber em um byte, a conversão falha com
+//! [`SimulationError::InvalidObjectByte`]. Se o arquivo terminar com um byte
+//! solto, a conversão falha com [`SimulationError::MisalignedObjectFile`],
+//! porque não há uma palavra de 16 bits completa para carregar.
 //!
 //! ## Modelo de execução
 //!
@@ -83,12 +86,12 @@ use crate::{
 
 /// Simula um arquivo `.obj`.
 ///
-/// A função lê o arquivo, converte sua sequência binária de palavras em um
+/// A função lê o arquivo, converte sua sequência textual de bytes em um
 /// programa objeto, cria um processador limpo, carrega o programa na memória e
 /// executa até `STOP` ou erro de simulação.
 ///
 /// # Parâmetros
-/// - `path`: caminho do arquivo objeto binário.
+/// - `path`: caminho do arquivo objeto textual.
 ///
 /// # Retorno
 /// - `Ok(())` quando o programa termina com `STOP`;
@@ -96,16 +99,16 @@ use crate::{
 ///   execução encontra uma falha.
 ///
 /// # Erros
-/// Retorna erro se a leitura do arquivo falhar, se o arquivo tiver quantidade
-/// ímpar de bytes, se o programa não couber na memória ou se a execução
-/// produzir um diagnóstico de simulação.
+/// Retorna erro se a leitura do arquivo falhar, se algum token não representar
+/// um byte, se o arquivo tiver quantidade ímpar de bytes, se o programa não
+/// couber na memória ou se a execução produzir um diagnóstico de simulação.
 pub fn simulate_obj_file(path: impl AsRef<Path>) -> Result<(), SimulationError> {
     let path = path.as_ref();
-    let bytes = fs::read(path).map_err(|err| SimulationError::ObjectFileRead {
+    let source = fs::read_to_string(path).map_err(|err| SimulationError::ObjectFileRead {
         path: path.display().to_string(),
         reason: err.to_string(),
     })?;
-    let program = object_program_from_obj_bytes(&bytes)?;
+    let program = object_program_from_obj_text(&source)?;
 
     simulate_object(program)
 }
@@ -124,13 +127,45 @@ pub(crate) fn simulate_object(program: ObjectProgram) -> Result<(), SimulationEr
     processor.run()
 }
 
-/// Converte o conteúdo binário de um `.obj` em [`ObjectProgram`].
+/// Converte o conteúdo textual de um `.obj` em [`ObjectProgram`].
 ///
-/// O arquivo é interpretado como uma sequência de [`Word`] em little-endian.
-/// Cada par de bytes forma uma palavra da arquitetura alvo.
+/// Cada token separado por espaço deve representar um byte decimal. Depois da
+/// leitura dos bytes, a função reconstrói palavras de 16 bits com
+/// [`object_program_from_obj_bytes`].
 ///
 /// # Parâmetros
-/// - `bytes`: conteúdo bruto do arquivo `.obj`.
+/// - `source`: conteúdo textual do arquivo `.obj`.
+///
+/// # Retorno
+/// - [`ObjectProgram`] com as palavras decodificadas na ordem em que aparecem
+///   no arquivo.
+///
+/// # Erros
+/// Retorna [`SimulationError::InvalidObjectByte`] quando algum token não cabe
+/// em `u8`, e [`SimulationError::MisalignedObjectFile`] quando a quantidade de
+/// bytes textuais não é múltipla do tamanho de uma [`Word`].
+pub(crate) fn object_program_from_obj_text(source: &str) -> Result<ObjectProgram, SimulationError> {
+    let bytes = source
+        .split_whitespace()
+        .map(|token| {
+            token
+                .parse::<u8>()
+                .map_err(|_| SimulationError::InvalidObjectByte {
+                    token: token.to_string(),
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    object_program_from_obj_bytes(&bytes)
+}
+
+/// Converte bytes já decodificados de um `.obj` em [`ObjectProgram`].
+///
+/// Cada par de bytes forma uma [`Word`] em little-endian, isto é, o primeiro
+/// byte do par contém os bits menos significativos da palavra.
+///
+/// # Parâmetros
+/// - `bytes`: bytes já lidos do conteúdo textual do arquivo `.obj`.
 ///
 /// # Retorno
 /// - [`ObjectProgram`] com as palavras decodificadas na ordem em que aparecem

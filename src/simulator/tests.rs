@@ -17,16 +17,15 @@ fn run_program(words: Vec<Word>) -> Processor {
 }
 
 #[test]
-fn parses_object_words_from_binary_source() {
-    let bytes = [10, 0, 7, 0, 14, 0, 255, 255];
-    let program = object_program_from_obj_bytes(&bytes).unwrap();
+fn parses_object_words_from_textual_byte_source() {
+    let program = object_program_from_obj_text("10 0 7 0 14 0 255 255").unwrap();
 
     assert_eq!(program.words, vec![10, 7, 14, Word::MAX]);
 }
 
 #[test]
-fn rejects_binary_object_with_incomplete_word() {
-    let err = match object_program_from_obj_bytes(&[10, 0, 7]) {
+fn rejects_textual_object_with_incomplete_word() {
+    let err = match object_program_from_obj_text("10 0 7") {
         Ok(_) => panic!("misaligned object should fail"),
         Err(err) => err,
     };
@@ -34,6 +33,19 @@ fn rejects_binary_object_with_incomplete_word() {
     assert!(matches!(
         err,
         SimulationError::MisalignedObjectFile { bytes: 3 }
+    ));
+}
+
+#[test]
+fn rejects_textual_object_with_invalid_byte() {
+    let err = match object_program_from_obj_text("10 0 256") {
+        Ok(_) => panic!("invalid byte should fail"),
+        Err(err) => err,
+    };
+
+    assert!(matches!(
+        err,
+        SimulationError::InvalidObjectByte { token } if token == "256"
     ));
 }
 

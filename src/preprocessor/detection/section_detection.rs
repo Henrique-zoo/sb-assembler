@@ -9,7 +9,6 @@
 //! - deixam a atualização de `current_section` para `execute`.
 
 use crate::{
-    interner::Symbol,
     lexer::{Token, TokenKind},
     preprocessor::Preprocessor,
 };

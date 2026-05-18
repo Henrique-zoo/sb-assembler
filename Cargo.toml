@@ -2,5 +2,11 @@
 name = "sb-assembler"
 version = "0.1.0"
 edition = "2024"
+authors = [
+    "Henrique Morcelles Salum morcelleshenrique@gmail.com",
+    "Paulo Torres"
+]
+license = "MIT"
 
 [dependencies]
+# feito no pelo

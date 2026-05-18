@@ -1,19 +1,21 @@
 use std::string::ParseError;
 
 use crate::{
-    interner::{Entry, Interner},
     language::{
-        self, LanguageSymbols,
-        instructions::{self, Mnemonic},
+        LanguageSymbols,
+        instructions::Mnemonic,
         numeric_literals::{NumberSign, NumericLiteral},
     },
-    lexer::{Span, Token, TokenKind},
+    lexer::{Token, TokenKind},
     parser::{
-        ir::{AddressOperand, DataDirective, Instruction, LabelDef, NumberLiteral, SymbolRef},
+        ir::{AddressOperand, DataDirective, LabelDef, NumberLiteral, SymbolRef},
         types::{DataLine, NodeSpans, ParsedProgram, TextLine},
     },
     preprocessor::{LogicalLine, PreprocessedProgram},
 };
+
+#[cfg(test)]
+use crate::{interner::Interner, lexer::Span, parser::ir::Instruction};
 
 pub(crate) mod ir;
 pub(crate) mod types;

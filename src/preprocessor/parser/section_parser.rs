@@ -60,7 +60,7 @@ impl Preprocessor<'_> {
 
         let Token {
             kind: TokenKind::Ident(expected_section_kind),
-            span: section_span,
+            span: _section_span,
         } = section
         else {
             return Err(Self::directive_sintatic_error(

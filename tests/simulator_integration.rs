@@ -1,5 +1,7 @@
 #![allow(dead_code, unused_imports, unused_variables)]
 
+mod common;
+
 mod assembler {
     pub type SignedWord = i16;
     pub type Word = u16;
@@ -14,17 +16,21 @@ mod interner;
 mod language;
 #[path = "../src/lexer/mod.rs"]
 mod lexer;
-#[path = "../src/parser/mod.rs"]
-mod parser;
+#[path = "../src/parser/ir.rs"]
+pub(crate) mod parser_ir;
+#[path = "../src/parser/types.rs"]
+pub(crate) mod parser_types;
 
-use std::{
-    fs,
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
-};
+mod parser {
+    pub(crate) use crate::parser_ir as ir;
+    pub(crate) use crate::parser_types as types;
+}
+
+use std::fs;
 
 use assembler::Word;
-use assembly::one_pass::{ObjectProgram, types::OnePassAssembler};
+use assembly::one_pass::{ObjectProgram, OnePassAssembler};
+use common::{cleanup, temp_base_path};
 use interner::{Interner, Symbol};
 use language::{
     instructions::{InstructionSet, Mnemonic},
@@ -145,41 +151,32 @@ fn assemble_object(interner: &Interner, program: ParsedProgram) -> ObjectProgram
         .object
 }
 
-fn object_to_bytes(object: &ObjectProgram) -> Vec<u8> {
+fn object_to_byte_text(object: &ObjectProgram) -> String {
     object
         .words
         .iter()
         .flat_map(|word| word.to_le_bytes())
-        .collect()
-}
-
-fn temp_obj_path(test_name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("relógio do sistema deve estar após UNIX_EPOCH")
-        .as_nanos();
-
-    std::env::temp_dir().join(format!(
-        "sb-assembler-{test_name}-{}-{nanos}.obj",
-        std::process::id()
-    ))
+        .map(|byte| byte.to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn simulate_object_via_file(
     object: &ObjectProgram,
     test_name: &str,
 ) -> Result<(), SimulationError> {
-    let path = temp_obj_path(test_name);
-    fs::write(&path, object_to_bytes(object)).expect("arquivo .obj temporário deve ser escrito");
+    let path = temp_base_path(test_name).with_extension("obj");
+    fs::write(&path, object_to_byte_text(object))
+        .expect("arquivo .obj temporário deve ser escrito");
 
     let result = simulate_obj_file(&path);
 
-    let _ = fs::remove_file(&path);
+    cleanup(&[path]);
     result
 }
 
 #[test]
-fn one_pass_object_round_trips_as_binary_and_executes_in_simulator() {
+fn one_pass_object_round_trips_as_textual_bytes_and_executes_in_simulator() {
     let mut interner = Interner::new();
     let mut spans = NodeSpans::new();
 
@@ -214,7 +211,7 @@ fn one_pass_object_round_trips_as_binary_and_executes_in_simulator() {
     );
 
     simulate_object_via_file(&object, "roundtrip")
-        .expect("programa montado deve passar pelo .obj binário e executar até STOP");
+        .expect("programa montado deve passar pelo .obj textual e executar até STOP");
 }
 
 #[test]
@@ -258,7 +255,7 @@ fn forward_text_label_from_assembler_controls_signed_jump_in_simulator() {
 }
 
 #[test]
-fn simulate_obj_file_runs_assembled_binary_object_through_public_facade() {
+fn simulate_obj_file_runs_assembled_textual_byte_object_through_public_facade() {
     let mut interner = Interner::new();
     let mut spans = NodeSpans::new();
 
@@ -283,16 +280,31 @@ fn simulate_obj_file_runs_assembled_binary_object_through_public_facade() {
 }
 
 #[test]
-fn simulate_obj_file_reports_misaligned_binary_object() {
-    let path = temp_obj_path("misaligned");
-    fs::write(&path, [14, 0, 1]).expect("arquivo .obj temporário deve ser escrito");
+fn simulate_obj_file_reports_misaligned_textual_byte_object() {
+    let path = temp_base_path("misaligned").with_extension("obj");
+    fs::write(&path, "14 0 1").expect("arquivo .obj temporário deve ser escrito");
 
     let result = simulate_obj_file(&path);
 
-    let _ = fs::remove_file(&path);
+    cleanup(&[path]);
 
     assert!(matches!(
         result,
         Err(SimulationError::MisalignedObjectFile { bytes: 3 })
+    ));
+}
+
+#[test]
+fn simulate_obj_file_reports_invalid_textual_byte() {
+    let path = temp_base_path("invalid-byte").with_extension("obj");
+    fs::write(&path, "14 0 256").expect("arquivo .obj temporário deve ser escrito");
+
+    let result = simulate_obj_file(&path);
+
+    cleanup(&[path]);
+
+    assert!(matches!(
+        result,
+        Err(SimulationError::InvalidObjectByte { token }) if token == "256"
     ));
 }

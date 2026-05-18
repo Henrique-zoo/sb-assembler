@@ -5,6 +5,8 @@ use crate::assembler::Word;
 pub enum SimulationError {
     /// O arquivo `.obj` não pôde ser lido.
     ObjectFileRead { path: String, reason: String },
+    /// O arquivo `.obj` contém um token que não representa um byte.
+    InvalidObjectByte { token: String },
     /// O arquivo `.obj` tem uma quantidade incompleta de bytes.
     MisalignedObjectFile { bytes: usize },
     /// O programa excede o tamanho da memória
