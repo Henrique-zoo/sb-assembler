@@ -19,7 +19,14 @@ fn main() {
             let assembler = Assembler::new(file_content.as_str());
             assembler.generate_preprocessed_file(remove_file_extension(file_name));
         }
-        _ if file_name.ends_with(".pre") => {}
+        _ if file_name.ends_with(".pre") => {
+            let file_content = fs::read_to_string(file_name).unwrap_or_else(|err| {
+                eprintln!("Erro ao ler o arquivo {}: {}", file_name, err);
+                std::process::exit(1);
+            });
+            let assembler = Assembler::new(file_content.as_str());
+            assembler.generate_obj_and_pen_files(remove_file_extension(file_name));
+        }
         _ => {
             eprintln!(
                 "Tipo de arquivo não suportado. Use .asm para arquivos de entrada ou .pre para arquivos pré-processados."

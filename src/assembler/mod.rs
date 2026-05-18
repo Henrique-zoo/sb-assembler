@@ -9,6 +9,7 @@
 //! - o método [`Assembler::process`] já inicializa o lexer e serve como
 //!   gancho para os próximos estágios (pré-processamento, parser e emissão).
 use crate::{
+    assembly::one_pass::OnePassAssembler,
     errors::{
         DirectiveKind, DirectiveSyntaxErrorKind, EquDirectiveSemanticErrorKind,
         EquDirectiveSyntaticErrorKind, ExpectedToken, IfDirectiveSemanticErrorKind,
@@ -18,8 +19,9 @@ use crate::{
     },
     file_creator::FileCreator,
     interner::Interner,
-    language::LanguageSymbols,
+    language::{LanguageSymbols, instructions::InstructionSet},
     lexer::Lexer,
+    parser::Parser,
     preprocessor::{PreprocessedProgram, Preprocessor},
 };
 
@@ -96,6 +98,45 @@ impl<'a> Assembler<'a> {
                 Self::touch_preprocessor_error(err);
             }
         }
+    }
+
+    pub fn generate_obj_and_pen_files(mut self, file_name: &str) {
+        let normalized_source = self.source.to_ascii_uppercase();
+        let lexer = Lexer::new(normalized_source.as_str(), &mut self.interner);
+        let tokens = lexer.collect::<Result<Vec<_>, _>>().unwrap_or_else(|err| {
+            Self::touch_lexer_error(&err);
+            Vec::new()
+        });
+
+        let mut preprocessor = Preprocessor::new(&self.language_symbols);
+        let preprocessed_tokens = preprocessor
+            .process(tokens, &mut self.interner)
+            .unwrap_or_else(|err| {
+                for err in &err {
+                    Self::touch_preprocessor_error(err);
+                }
+                PreprocessedProgram {
+                    text: Vec::new(),
+                    data: Vec::new(),
+                }
+            });
+
+        let parser = Parser::new(&self.language_symbols);
+        let parsed_program = parser.parse(preprocessed_tokens).unwrap();
+
+        let isa = InstructionSet::new();
+
+        let one_pass_assembler = OnePassAssembler::new(&self.interner, &isa);
+        let final_program = one_pass_assembler.assemble(parsed_program).unwrap();
+
+        FileCreator::create_assembled_output_file(
+            &format!("{}.pen", file_name),
+            &final_program.pending.words,
+        );
+        FileCreator::create_assembled_output_file(
+            &format!("{}.obj", file_name),
+            &final_program.object.words,
+        );
     }
 
     pub fn generate_preprocessed_file(mut self, file_name: &str) {
