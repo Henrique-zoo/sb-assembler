@@ -1,6 +1,7 @@
 pub mod assembler;
 pub(crate) mod assembly;
 pub mod errors;
+pub(crate) mod file_creator;
 pub(crate) mod interner;
 pub(crate) mod language;
 pub(crate) mod lexer;

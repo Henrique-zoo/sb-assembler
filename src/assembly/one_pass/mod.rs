@@ -13,12 +13,13 @@
 use crate::{
     assembler::Word,
     assembly::one_pass::types::{
-        AssemblyArtifacts, Offset, OnePassAssembler, PatchSite, SymbolEntry,
+        AssemblyArtifacts, ObjectProgram, Offset, PatchSite, PendingProgram, SymbolEntry,
+        SymbolTable,
     },
     errors::{AssemblyError, AssemblyErrorKind, NumberContext},
-    interner::Symbol,
+    interner::{Interner, Symbol},
     language::{
-        instructions::Mnemonic,
+        instructions::{InstructionSet, Mnemonic},
         numeric_literals::{self, NumberParseError, NumericLiteral},
     },
     lexer::Span,
@@ -29,6 +30,47 @@ use crate::{
 };
 
 mod types;
+
+pub(crate) struct OnePassAssembler<'a> {
+    pub interner: &'a Interner,
+    pub isa: &'a InstructionSet,
+
+    pub symbols: SymbolTable,
+    pub location_counter: usize,
+    pub errors: Vec<AssemblyError>,
+    pub artifacts: AssemblyArtifacts,
+}
+
+impl<'a> OnePassAssembler<'a> {
+    /// Cria um montador de uma passagem com estado semântico vazio.
+    ///
+    /// O montador guarda referências para as tabelas compartilhadas da
+    /// linguagem e inicializa o estado mutável usado durante a passagem:
+    /// tabela de símbolos, contador de posição, lista de diagnósticos e
+    /// artefatos de saída.
+    ///
+    /// # Parâmetros
+    /// - `interner`: tabela usada para converter símbolos internados em
+    ///   lexemas durante validação numérica;
+    /// - `isa`: especificação de opcodes e tamanhos das instruções.
+    ///
+    /// # Retorno
+    /// - [`OnePassAssembler`] pronto para consumir um
+    ///   [`crate::parser::types::ParsedProgram`].
+    pub(crate) fn new(interner: &'a Interner, isa: &'a InstructionSet) -> Self {
+        Self {
+            interner,
+            isa,
+            symbols: SymbolTable::new(),
+            location_counter: 0,
+            errors: Vec::new(),
+            artifacts: AssemblyArtifacts {
+                object: ObjectProgram { words: Vec::new() },
+                pending: PendingProgram { words: Vec::new() },
+            },
+        }
+    }
+}
 
 impl<'a> OnePassAssembler<'a> {
     /// Executa a montagem de uma passagem sobre um programa parseado.
