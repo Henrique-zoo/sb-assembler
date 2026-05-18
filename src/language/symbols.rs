@@ -1,6 +1,9 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use crate::interner::{Interner, Symbol};
+use crate::{
+    interner::{Interner, Symbol},
+    language::instructions::Mnemonic,
+};
 
 /// Símbolos internados das diretivas próprias do pré-processador.
 #[derive(Debug)]
@@ -86,6 +89,7 @@ pub(crate) struct LanguageSymbols {
     pub instructions: InstructionSymbols,
     directives: HashSet<Symbol>,
     instruction_set: HashSet<Symbol>,
+    mnemonic_instruction_map: HashMap<Symbol, Mnemonic>,
 }
 
 impl LanguageSymbols {
@@ -159,6 +163,22 @@ impl LanguageSymbols {
         .into_iter()
         .collect();
 
+        let mut mnemonic_instruction_map = HashMap::<Symbol, Mnemonic>::new();
+        mnemonic_instruction_map.insert(instructions.add, Mnemonic::Add);
+        mnemonic_instruction_map.insert(instructions.sub, Mnemonic::Sub);
+        mnemonic_instruction_map.insert(instructions.mult, Mnemonic::Mult);
+        mnemonic_instruction_map.insert(instructions.div, Mnemonic::Div);
+        mnemonic_instruction_map.insert(instructions.jmp, Mnemonic::Jmp);
+        mnemonic_instruction_map.insert(instructions.jmpn, Mnemonic::Jmpn);
+        mnemonic_instruction_map.insert(instructions.jmpp, Mnemonic::Jmpp);
+        mnemonic_instruction_map.insert(instructions.jmpz, Mnemonic::Jmpz);
+        mnemonic_instruction_map.insert(instructions.copy, Mnemonic::Copy);
+        mnemonic_instruction_map.insert(instructions.load, Mnemonic::Load);
+        mnemonic_instruction_map.insert(instructions.store, Mnemonic::Store);
+        mnemonic_instruction_map.insert(instructions.input, Mnemonic::Input);
+        mnemonic_instruction_map.insert(instructions.output, Mnemonic::Output);
+        mnemonic_instruction_map.insert(instructions.stop, Mnemonic::Stop);
+
         Self {
             preprocessor,
             sections,
@@ -166,6 +186,7 @@ impl LanguageSymbols {
             instructions,
             directives,
             instruction_set,
+            mnemonic_instruction_map,
         }
     }
 
@@ -182,5 +203,9 @@ impl LanguageSymbols {
     /// Indica se `sym` é qualquer palavra reservada da linguagem.
     pub(crate) fn is_reserved(&self, sym: Symbol) -> bool {
         self.is_directive(sym) || self.is_instruction(sym)
+    }
+
+    pub(crate) fn get_mnemonic(&self, sym: &Symbol) -> Option<&Mnemonic> {
+        self.mnemonic_instruction_map.get(sym)
     }
 }
