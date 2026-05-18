@@ -146,6 +146,7 @@ impl<'a> Parser<'a> {
             }
             _ if sym == self.language.data_directives.space => {
                 let amount = self.extract_number_literal(tail).ok();
+                // Não aceita declaracoes como "SPACE +10" ou "SPACE -10", apenas "SPACE 10"
                 if matches!(
                     amount,
                     Some(NumberLiteral {
