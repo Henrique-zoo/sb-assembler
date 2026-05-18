@@ -56,7 +56,6 @@ fn scan_basic_program() {
         TokenKind::Colon,
         TokenKind::Ident(space),
         TokenKind::NewLine,
-        TokenKind::Eof,
     ];
 
     let actual_kinds: Vec<_> = tokens.into_iter().map(|t| t.kind).collect();
@@ -156,7 +155,7 @@ fn preserves_spans_across_lines_and_punctuation() {
     );
     assert_token(
         &tokens[8],
-        TokenKind::Eof,
+        TokenKind::NewLine,
         Span {
             pos: 17,
             line: 2,
@@ -204,7 +203,7 @@ fn splits_adjacent_number_and_identifier() {
         vec![
             TokenKind::Number(number),
             TokenKind::Ident(ident),
-            TokenKind::Eof,
+            TokenKind::NewLine,
         ]
     );
 }
@@ -227,7 +226,6 @@ fn lexes_ampersand_tokens_in_parameter_like_sequence() {
             TokenKind::Ampersand,
             TokenKind::Ident(b),
             TokenKind::NewLine,
-            TokenKind::Eof,
         ]
     );
 }
@@ -262,7 +260,7 @@ fn preserves_span_for_ampersand_token() {
     );
     assert_token(
         &tokens[2],
-        TokenKind::Eof,
+        TokenKind::NewLine,
         Span {
             pos: 2,
             line: 1,
@@ -291,7 +289,6 @@ fn lexes_hex_and_binary_numbers_with_prefixes() {
             TokenKind::Number(n3),
             TokenKind::Number(n4),
             TokenKind::NewLine,
-            TokenKind::Eof,
         ]
     );
 }
@@ -332,22 +329,21 @@ fn skips_comments_with_unicode_and_emits_newlines() {
             TokenKind::NewLine,
             TokenKind::Ident(add),
             TokenKind::NewLine,
-            TokenKind::Eof,
         ]
     );
 }
 
 #[test]
-fn emits_only_eof_for_empty_or_whitespace_only_input() {
+fn emits_only_final_newline_for_empty_or_whitespace_only_input() {
     for source in ["", " \t\r"] {
         let (tokens, _) = lex_ok(source);
         assert_eq!(tokens.len(), 1);
-        assert_eq!(tokens[0].kind, TokenKind::Eof);
+        assert_eq!(tokens[0].kind, TokenKind::NewLine);
     }
 }
 
 #[test]
-fn emits_eof_after_trailing_horizontal_whitespace() {
+fn emits_final_newline_after_trailing_horizontal_whitespace() {
     let source = "ADD   \t\r";
     let (tokens, mut interner) = lex_ok(source);
 
@@ -366,13 +362,93 @@ fn emits_eof_after_trailing_horizontal_whitespace() {
     );
     assert_token(
         &tokens[1],
-        TokenKind::Eof,
+        TokenKind::NewLine,
         Span {
             pos: 8,
             line: 1,
             column: 9,
             len: 0,
         },
+    );
+}
+
+#[test]
+fn supports_line_break_after_label_colon() {
+    let source = "ROT:\nADD\n";
+    let (tokens, mut interner) = lex_ok(source);
+
+    let rot = interner.entry("ROT").or_insert();
+    let add = interner.entry("ADD").or_insert();
+    let actual_kinds: Vec<_> = tokens.into_iter().map(|token| token.kind).collect();
+
+    assert_eq!(
+        actual_kinds,
+        vec![
+            TokenKind::Ident(rot),
+            TokenKind::Colon,
+            TokenKind::Ident(add),
+            TokenKind::NewLine,
+        ]
+    );
+}
+
+#[test]
+fn supports_line_break_after_label_with_extra_horizontal_whitespace() {
+    let source = "ROT:   \n \tADD\n";
+    let (tokens, mut interner) = lex_ok(source);
+
+    let rot = interner.entry("ROT").or_insert();
+    let add = interner.entry("ADD").or_insert();
+    let actual_kinds: Vec<_> = tokens.into_iter().map(|token| token.kind).collect();
+
+    assert_eq!(
+        actual_kinds,
+        vec![
+            TokenKind::Ident(rot),
+            TokenKind::Colon,
+            TokenKind::Ident(add),
+            TokenKind::NewLine,
+        ]
+    );
+}
+
+#[test]
+fn supports_line_break_after_label_with_comment_after_colon() {
+    let source = "ROT: ; comentário\nADD\n";
+    let (tokens, mut interner) = lex_ok(source);
+
+    let rot = interner.entry("ROT").or_insert();
+    let add = interner.entry("ADD").or_insert();
+    let actual_kinds: Vec<_> = tokens.into_iter().map(|token| token.kind).collect();
+
+    assert_eq!(
+        actual_kinds,
+        vec![
+            TokenKind::Ident(rot),
+            TokenKind::Colon,
+            TokenKind::Ident(add),
+            TokenKind::NewLine,
+        ]
+    );
+}
+
+#[test]
+fn supports_line_break_after_label_with_blank_and_comment_lines() {
+    let source = "ROT:\n\n; comentário intermediário\n   \nADD\n";
+    let (tokens, mut interner) = lex_ok(source);
+
+    let rot = interner.entry("ROT").or_insert();
+    let add = interner.entry("ADD").or_insert();
+    let actual_kinds: Vec<_> = tokens.into_iter().map(|token| token.kind).collect();
+
+    assert_eq!(
+        actual_kinds,
+        vec![
+            TokenKind::Ident(rot),
+            TokenKind::Colon,
+            TokenKind::Ident(add),
+            TokenKind::NewLine,
+        ]
     );
 }
 

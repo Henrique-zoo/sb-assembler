@@ -2,7 +2,8 @@
 //!
 //! Este módulo reúne detectores `looks_like_*` cuja responsabilidade é
 //! **triagem**: responder se uma linha *parece* uma tentativa de uso de
-//! diretiva (`MACRO`, `ENDMACRO`, `EQU`, `IF`, `ORG`), sem exigir sintaxe
+//! diretiva (`MACRO`, `ENDMACRO`, `EQU`, `IF`, `SECTION TEXT`,
+//! `SECTION DATA`), sem exigir sintaxe
 //! estrita.
 //!
 //! ## Objetivo principal
@@ -39,7 +40,7 @@
 //! ## Integração com o restante do pré-processador
 //!
 //! Fluxo resumido:
-//! 1. `process_line` (orquestração) chama `looks_like_*`;
+//! 1. `process` (orquestração) chama `looks_like_*`;
 //! 2. se `true`, delega ao parser apropriado;
 //! 3. parser valida estrutura e extrai dados;
 //! 4. estágio de execução aplica efeito ou acumula erro.
@@ -53,16 +54,13 @@
 //! - `macro_detection`: `MACRO` e `ENDMACRO`;
 //! - `equ_detection`: `EQU`;
 //! - `if_detection`: `IF`.
-//! - `org_detection`: `ORG`.
+//! - `section_detection`: `SECTION TEXT` e `SECTION DATA`.
 //!
 //! Além disso, este módulo separa fluxos específicos de macro:
-//! - `macro_body_detection`: tentativas relacionadas ao corpo da macro
-//!   (linhas internas e encerramento);
 //! - `macro_call_detection`: tentativas de chamada de macro.
 
 mod equ_detection;
 mod if_detection;
-mod macro_body_detection;
 mod macro_call_detection;
 mod macro_detection;
-mod org_detection;
+mod section_detection;

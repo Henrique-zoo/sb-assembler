@@ -3,7 +3,7 @@ use crate::{
     preprocessor::Preprocessor,
 };
 
-impl Preprocessor {
+impl Preprocessor<'_> {
     /// Indica se a linha parece iniciar uma definição de macro.
     ///
     /// Forma canônica na linguagem:
@@ -24,7 +24,7 @@ impl Preprocessor {
     /// ```rust,ignore
     /// let span = Span { pos: 0, line: 1, column: 1, len: 1 };
     /// let label = interner.entry("ROT").or_insert();
-    /// let macro_kw = preprocessor.keywords.macro_kw;
+    /// let macro_kw = preprocessor.language_symbols.preprocessor.macro_;
     /// let add = interner.entry("ADD").or_insert();
     ///
     /// // Caso canônico
@@ -61,7 +61,7 @@ impl Preprocessor {
                 Token { kind: TokenKind::Ident(_), ..},
                 Token { kind: TokenKind::Ident(sym), .. },
                 ..
-            ] if *sym == self.keywords.macro_kw
+            ] if *sym == self.language_symbols.preprocessor.macro_
         ) || matches!(
             line,
             [
@@ -69,7 +69,7 @@ impl Preprocessor {
                 Token { kind: TokenKind::Colon, .. },
                 Token { kind: TokenKind::Ident(sym), .. },
                 ..
-            ] if *sym == self.keywords.macro_kw
+            ] if *sym == self.language_symbols.preprocessor.macro_
         )
     }
 
@@ -91,7 +91,7 @@ impl Preprocessor {
     /// # Exemplos
     /// ```rust,ignore
     /// let span = Span { pos: 0, line: 1, column: 1, len: 1 };
-    /// let endmacro_kw = preprocessor.keywords.endmacro_kw;
+    /// let endmacro_kw = preprocessor.language_symbols.preprocessor.endmacro;
     /// let add = interner.entry("ADD").or_insert();
     ///
     /// // Caso canônico
@@ -121,7 +121,7 @@ impl Preprocessor {
         matches!(
             line,
             [Token { kind: TokenKind::Ident(sym), .. }, ..]
-            if *sym == self.keywords.endmacro_kw
+            if *sym == self.language_symbols.preprocessor.endmacro
         )
     }
 }

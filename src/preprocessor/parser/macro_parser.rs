@@ -1,24 +1,29 @@
 use crate::{
-    errors::{InvalidParamKind, MacroHeaderErrorKind, PreprocessorError, PreprocessorErrorKind},
+    errors::{
+        DirectiveKind, DirectiveSyntaxErrorKind, ExpectedToken, InvalidParamKind,
+        MacroHeaderErrorKind, PreprocessorError, PreprocessorErrorKind,
+    },
     interner::Symbol,
     lexer::{Span, Token, TokenKind},
     preprocessor::{
         Preprocessor,
-        types::{MacroHeader, Param},
+        ir::{MacroBodyItem, MacroBodyLine, MacroHeader, Param},
     },
 };
 
-impl Preprocessor {
+impl Preprocessor<'_> {
     /// Faz o parsing completo do cabeçalho de macro.
     ///
     /// Forma canônica na linguagem:
-    /// - `<Label>: MACRO`
-    /// - `<Label>: MACRO &P1, &P2, ...`
+    /// ```ignore
+    /// <Label>: MACRO
+    /// <Label>: MACRO &P1, &P2, ...
+    /// ```
     ///
     /// Fluxo interno:
     /// 1. valida e extrai label com `parse_macro_label`;
-    /// 2. exige `:` com `consume_required_colon`;
-    /// 3. exige keyword `MACRO` com `consume_macro_keyword`;
+    /// 2. exige `:` com `consume_required_token`;
+    /// 3. exige keyword `MACRO` com `consume_keyword`;
     /// 4. parseia parâmetros com `parse_macro_params`.
     ///
     /// Estilo de implementação:
@@ -27,29 +32,87 @@ impl Preprocessor {
     /// - propagação de falha imediata via `?` (estilo parser combinator manual).
     ///
     /// Retorno:
-    /// - `Ok(MacroHeader { name, params })` quando o cabeçalho é sintaticamente válido.
+    /// - `Ok(MacroHeader { node_id, name, params })` quando o cabeçalho é
+    ///   sintaticamente válido.
     ///
     /// Erros:
     /// - propaga erros de qualquer etapa do pipeline (`InvalidLabel`,
-    ///   `MissingColon`, erros de parâmetro, tokens inesperados etc.).
+    ///   `MissingToken`/`UnexpectedToken` em tokens obrigatórios e
+    ///   erros de parâmetro).
     ///
     /// Efeito colateral:
     /// - nenhum. A função apenas valida e extrai estrutura.
     pub(in crate::preprocessor) fn parse_macro_header(
-        &self,
+        &mut self,
         line: &[Token],
     ) -> Result<MacroHeader, PreprocessorError> {
-        let (name, rest, label_span) = self.parse_macro_label(line)?;
-        let (rest, colon_span) = self.consume_required_colon(rest, label_span)?;
-        let rest = self.consume_macro_keyword(rest, colon_span)?;
+        let (name, tail, label_span) = self.parse_macro_label(line)?;
+        let (tail, colon_span) = self.consume_required_token(
+            tail,
+            DirectiveKind::MacroHeader,
+            TokenKind::Colon,
+            label_span,
+        )?;
+        let (tail, _) = self.consume_keyword(
+            tail,
+            DirectiveKind::MacroHeader,
+            self.language_symbols.preprocessor.macro_,
+            colon_span,
+        )?;
+        let params = self.parse_macro_params(tail)?;
+        let span = self.consumed_whole_line_span(line, label_span);
+        let node_id = self.alloc_node_id(span);
 
-        self.parse_macro_params(rest)
-        .map(|params| MacroHeader { name, params })
+        Ok(MacroHeader {
+            node_id,
+            name,
+            params,
+        })
     }
+
+    /// Faz o parsing completo da linha de encerramento de macro.
+    ///
+    /// Forma canônica na linguagem:
+    /// ```ignore
+    /// ENDMACRO
+    /// ```
+    ///
+    /// Fluxo interno:
+    /// 1. exige keyword `ENDMACRO` com `consume_keyword`;
+    /// 2. garante ausência de sufixo com `ensure_no_trailing_tokens`.
+    ///
+    /// Retorno:
+    /// - `Ok(())` quando a linha é exatamente `ENDMACRO`.
+    ///
+    /// Erros:
+    /// - propaga falhas de `consume_keyword` (token ausente/inesperado no
+    ///   prefixo);
+    /// - propaga `TrailingTokens` quando há tokens após `ENDMACRO`.
+    ///
+    /// Efeito colateral:
+    /// - nenhum. A função apenas valida sintaxe.
+    pub(in crate::preprocessor) fn parse_endmacro_line(
+        &self,
+        line: &[Token],
+    ) -> Result<(), PreprocessorError> {
+        let (tail, _) = self.consume_keyword(
+            line,
+            DirectiveKind::EndMacro,
+            self.language_symbols.preprocessor.endmacro,
+            Span::default(),
+        )?;
+
+        self.ensure_no_trailing_tokens(tail, DirectiveKind::EndMacro)?;
+
+        Ok(())
+    }
+
     /// Lê e valida o rótulo inicial do cabeçalho de macro.
     ///
     /// Forma esperada (prefixo):
-    /// - `<Label> ...`
+    /// ```ignore
+    /// <Label> ...
+    /// ```
     ///
     /// Retorno:
     /// - `Ok((name, rest, label_span))`, onde:
@@ -72,99 +135,26 @@ impl Preprocessor {
         // e o preprocessador só chama o `parse_macro_header` se o `looks_like_*` reconhecer
         // Por isso, podemos utilizar o `Span::default()` aqui
         let (label_token, rest) = line.split_first().ok_or_else(|| {
-            Self::macro_header_error(MacroHeaderErrorKind::InvalidLabel, Span::default())
+            Self::macro_header_sintatic_error(MacroHeaderErrorKind::InvalidLabel, Span::default())
         })?;
-        
+
         match &label_token.kind {
             TokenKind::Ident(name) => Ok((*name, rest, label_token.span)),
-            _ => Err(Self::macro_header_error(
+            _ => Err(Self::macro_header_sintatic_error(
                 MacroHeaderErrorKind::InvalidLabel,
                 label_token.span,
             )),
-        }
-    }
-    
-    /// Consome o `:` obrigatório logo após a label da macro.
-    ///
-    /// Forma esperada (prefixo):
-    /// - `: ...`
-    ///
-    /// Parâmetros:
-    /// - `rest`: sufixo da linha após a label;
-    /// - `fallback_span`: span usado quando `rest` está vazio.
-    ///
-    /// Retorno:
-    /// - `Ok((tail, colon_span))`, onde `tail` é o restante após `:`.
-    ///
-    /// Erros:
-    /// - `MissingColon` quando não há token após a label;
-    /// - `MissingColon` quando o próximo token não é `Colon`.
-    ///
-    /// Efeito colateral:
-    /// - nenhum. Não altera estado global.
-    fn consume_required_colon<'a>(
-        &self,
-        rest: &'a [Token],
-        fallback_span: Span,
-    ) -> Result<(&'a [Token], Span), PreprocessorError> {
-        let (token, tail) = rest.split_first().ok_or_else(|| {
-            Self::macro_header_error(MacroHeaderErrorKind::MissingColon, fallback_span)
-        })?;
-
-        if matches!(&token.kind, TokenKind::Colon) {
-            Ok((tail, token.span))
-        } else {
-            Err(Self::macro_header_error(
-                MacroHeaderErrorKind::MissingColon,
-                token.span,
-            ))
-        }
-    }
-
-    /// Consome a keyword `MACRO` após o prefixo `<Label>:` já validado.
-    ///
-    /// Forma esperada (prefixo):
-    /// - `MACRO ...`
-    ///
-    /// Parâmetros:
-    /// - `rest`: sufixo após `:`;
-    /// - `fallback_span`: span usado quando não há token para apontar.
-    ///
-    /// Retorno:
-    /// - `Ok(tail)` contendo apenas os tokens de parâmetros (ou vazio).
-    ///
-    /// Erros:
-    /// - `TrailingTokens` quando não há token onde `MACRO` era esperado;
-    /// - `TrailingTokens` quando o token presente não é a keyword `MACRO`.
-    ///
-    /// Nota:
-    /// - como ainda não existe variante específica para “keyword ausente”,
-    ///   esta função usa `TrailingTokens` para representar esse desvio.
-    fn consume_macro_keyword<'a>(
-        &self,
-        rest: &'a [Token],
-        fallback_span: Span,
-    ) -> Result<&'a [Token], PreprocessorError> {
-        let (token, tail) = rest.split_first().ok_or_else(|| {
-            Self::macro_header_error(MacroHeaderErrorKind::TrailingTokens, fallback_span)
-        })?;
-
-        if matches!(&token.kind, TokenKind::Ident(sym) if *sym == self.keywords.macro_kw) {
-            Ok(tail)
-        } else {
-            Err(Self::macro_header_error(
-                MacroHeaderErrorKind::TrailingTokens,
-                token.span,
-            ))
         }
     }
 
     /// Parseia a lista de parâmetros posicionais após a keyword `MACRO`.
     ///
     /// Forma canônica na linguagem:
-    /// - vazio (sem parâmetros): `MACRO`
-    /// - um parâmetro: `MACRO &A`
-    /// - múltiplos parâmetros: `MACRO &A, &B, &C`
+    /// ```ignore
+    /// MACRO
+    /// MACRO &A
+    /// MACRO &A, &B, &C
+    /// ```
     ///
     /// A estratégia usa uma pequena máquina de estados sobre o iterador:
     /// - `ExpectAmpersand`: espera `&` iniciando o próximo parâmetro;
@@ -182,8 +172,8 @@ impl Preprocessor {
     /// - `InvalidParam(NoAmpersand)` quando um parâmetro não começa com `&`;
     /// - `InvalidParam(UnexpectedComma)` quando há vírgula final sem próximo parâmetro;
     /// - `InvalidParam(InvalidParamIdent)` quando o token após `&` não é `Ident`;
-    /// - `TrailingTokens` quando aparece token inválido onde só `,` ou fim
-    ///   seriam aceitos.
+    /// - `InvalidDirectiveSyntax(TrailingTokens { directive: MacroHeader })`
+    ///   quando aparece token inválido onde só `,` ou fim seriam aceitos.
     ///
     /// Efeito colateral:
     /// - nenhum. A função não altera estado global do preprocessor.
@@ -214,7 +204,7 @@ impl Preprocessor {
     ///     vec![a, b]
     /// );
     /// ```
-    fn parse_macro_params(&self, rest: &[Token]) -> Result<Vec<Param>, PreprocessorError> {
+    fn parse_macro_params(&self, line: &[Token]) -> Result<Vec<Param>, PreprocessorError> {
         #[derive(Clone, Copy)]
         enum ParseState {
             ExpectAmpersand,
@@ -222,15 +212,15 @@ impl Preprocessor {
             ExpectCommaOrEnd,
         }
 
-        let (params, state, last_span) = rest
-            .iter()
-            .try_fold((Vec::new(), ParseState::ExpectAmpersand, None),|(mut params, state, _), token| {
+        let (params, state, last_span) = line.iter().try_fold(
+            (Vec::new(), ParseState::ExpectAmpersand, None),
+            |(mut params, state, _), token| {
                 let next_state = match state {
                     ParseState::ExpectAmpersand => {
                         if matches!(&token.kind, TokenKind::Ampersand) {
                             ParseState::ExpectParamIdent
                         } else {
-                            return Err(Self::invalid_param_error(
+                            return Err(Self::invalid_param_sintatic_error(
                                 InvalidParamKind::NoAmpersand,
                                 token.span,
                             ));
@@ -241,7 +231,7 @@ impl Preprocessor {
                             params.push(*param);
                             ParseState::ExpectCommaOrEnd
                         } else {
-                            return Err(Self::invalid_param_error(
+                            return Err(Self::invalid_param_sintatic_error(
                                 InvalidParamKind::InvalidParamIdent,
                                 token.span,
                             ));
@@ -251,8 +241,10 @@ impl Preprocessor {
                         if matches!(&token.kind, TokenKind::Comma) {
                             ParseState::ExpectAmpersand
                         } else {
-                            return Err(Self::macro_header_error(
-                                MacroHeaderErrorKind::TrailingTokens,
+                            return Err(Self::directive_sintatic_error(
+                                DirectiveSyntaxErrorKind::TrailingTokens {
+                                    directive: DirectiveKind::MacroHeader,
+                                },
                                 token.span,
                             ));
                         }
@@ -260,14 +252,17 @@ impl Preprocessor {
                 };
 
                 Ok((params, next_state, Some(token.span)))
-            })?;
+            },
+        )?;
 
         match state {
-            ParseState::ExpectAmpersand if !rest.is_empty() => Err(Self::invalid_param_error(
-                InvalidParamKind::UnexpectedComma,
-                last_span.unwrap_or_default(),
-            )),
-            ParseState::ExpectParamIdent => Err(Self::invalid_param_error(
+            ParseState::ExpectAmpersand if !line.is_empty() => {
+                Err(Self::invalid_param_sintatic_error(
+                    InvalidParamKind::UnexpectedComma,
+                    last_span.unwrap_or_default(),
+                ))
+            }
+            ParseState::ExpectParamIdent => Err(Self::invalid_param_sintatic_error(
                 InvalidParamKind::InvalidParamIdent,
                 last_span.unwrap_or_default(),
             )),
@@ -285,7 +280,7 @@ impl Preprocessor {
     /// - não altera estado do pré-processador;
     /// - apenas encapsula `MacroHeaderErrorKind` em
     ///   `PreprocessorErrorKind::InvalidMacroHeader`.
-    fn macro_header_error(kind: MacroHeaderErrorKind, span: Span) -> PreprocessorError {
+    fn macro_header_sintatic_error(kind: MacroHeaderErrorKind, span: Span) -> PreprocessorError {
         PreprocessorError {
             kind: PreprocessorErrorKind::InvalidMacroHeader(kind),
             span,
@@ -301,7 +296,161 @@ impl Preprocessor {
     /// - não altera estado interno;
     /// - preserva o `span` recebido para diagnóstico.
     #[inline]
-    fn invalid_param_error(kind: InvalidParamKind, span: Span) -> PreprocessorError {
-        Self::macro_header_error(MacroHeaderErrorKind::InvalidParam(kind), span)
+    fn invalid_param_sintatic_error(kind: InvalidParamKind, span: Span) -> PreprocessorError {
+        Self::macro_header_sintatic_error(MacroHeaderErrorKind::InvalidParam(kind), span)
+    }
+
+    /// Parseia uma linha do corpo de macro em representação estruturada.
+    ///
+    /// Forma canônica (exemplos):
+    /// ```ignore
+    /// ADD &A
+    /// COPY &SRC, &DST
+    /// LOAD N1
+    /// ```
+    ///
+    /// Estratégia:
+    /// 1. percorre a linha com um cursor (`tail`);
+    /// 2. consome um item por vez via [`Self::parse_macro_body_item`];
+    /// 3. acumula os itens parseados em ordem;
+    /// 4. consolida o `span` da linha inteira.
+    ///
+    /// Parâmetros:
+    /// - `line`: conteúdo da linha (sem `NewLine`);
+    /// - `terminator`: terminador original da linha no fonte.
+    ///
+    /// Retorno:
+    /// - `Ok(MacroBodyLine { node_id, terminator, items })` quando todos os
+    ///   itens da linha são válidos.
+    ///
+    /// Erros:
+    /// - propaga a primeira falha retornada por
+    ///   [`Self::parse_macro_body_item`].
+    ///
+    /// Efeito colateral:
+    /// - nenhum. Apenas valida/converte tokens da linha.
+    pub(in crate::preprocessor) fn parse_macro_body_line(
+        &mut self,
+        line: &[Token],
+        terminator: Token,
+    ) -> Result<MacroBodyLine, PreprocessorError> {
+        let mut tail = line;
+        let mut parsed_items = Vec::new();
+        let mut fallback_span = Span::default();
+
+        while !tail.is_empty() {
+            let (item, next_tail, item_span) = self.parse_macro_body_item(tail)?;
+            if parsed_items.is_empty() {
+                fallback_span = item_span;
+            }
+            parsed_items.push(item);
+            tail = next_tail;
+        }
+
+        let span = self.consumed_whole_line_span(line, fallback_span);
+        let node_id = self.alloc_node_id(span);
+
+        Ok(MacroBodyLine {
+            node_id,
+            terminator,
+            items: parsed_items,
+        })
+    }
+
+    /// Consome e parseia o próximo item do corpo de macro.
+    ///
+    /// Formas aceitas para o item atual:
+    /// ```ignore
+    /// <Ident> | <Number> | "," | ":" | "+" | "-"
+    /// "&" <Ident>
+    /// ```
+    ///
+    /// Regras:
+    /// - tokens literais são preservados como
+    ///   `MacroBodyItem::Literal(Token)`;
+    /// - `&` inicia referência de parâmetro e delega para
+    ///   [`Self::parse_macro_param_ref`].
+    ///
+    /// Pré-condição:
+    /// - `line` não deve ser vazia.
+    ///
+    /// Retorno:
+    /// - `Ok((item, tail, item_span))`, onde:
+    ///   - `item` é o item parseado;
+    ///   - `tail` é o sufixo remanescente após o consumo;
+    ///   - `item_span` é o span do item consumido.
+    ///
+    /// Erros:
+    /// - propaga erros de [`Self::parse_macro_param_ref`] quando o prefixo é
+    ///   `&`.
+    fn parse_macro_body_item<'a>(
+        &mut self,
+        line: &'a [Token],
+    ) -> Result<(MacroBodyItem, &'a [Token], Span), PreprocessorError> {
+        let (first, tail) = line.split_first().unwrap();
+
+        match first.kind {
+            TokenKind::Comma
+            | TokenKind::Colon
+            | TokenKind::Minus
+            | TokenKind::Plus
+            | TokenKind::Ident(_)
+            | TokenKind::Number(_) => Ok((MacroBodyItem::Literal(*first), tail, first.span)),
+            TokenKind::Ampersand => self.parse_macro_param_ref(tail, first.span),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Parseia uma referência de parâmetro formal logo após `&`.
+    ///
+    /// Forma esperada:
+    /// ```ignore
+    /// &<Ident>
+    /// ```
+    ///
+    /// Parâmetros:
+    /// - `tail`: sufixo imediatamente após o token `&`;
+    /// - `fallback_span`: span do `&`, usado quando não existe token seguinte.
+    ///
+    /// Retorno:
+    /// - `Ok((MacroBodyItem::ParamRef(sym, span), tail, span))` quando o token
+    ///   seguinte é `Ident`.
+    ///
+    /// Erros:
+    /// - `InvalidDirectiveSyntax(MissingToken { directive: MacroBody, .. })`
+    ///   quando não há token após `&`;
+    /// - `InvalidDirectiveSyntax(UnexpectedToken { directive: MacroBody, .. })`
+    ///   quando o token após `&` não é `Ident`.
+    fn parse_macro_param_ref<'a>(
+        &mut self,
+        tail: &'a [Token],
+        fallback_span: Span,
+    ) -> Result<(MacroBodyItem, &'a [Token], Span), PreprocessorError> {
+        let (param_token, tail) = tail.split_first().ok_or_else(|| {
+            Self::directive_sintatic_error(
+                DirectiveSyntaxErrorKind::MissingToken {
+                    directive: DirectiveKind::MacroBody,
+                    expected: ExpectedToken::Ident,
+                },
+                fallback_span,
+            )
+        })?;
+
+        if let TokenKind::Ident(sym) = param_token.kind {
+            let param_ref_node_id = self.alloc_node_id(param_token.span);
+            Ok((
+                MacroBodyItem::ParamRef(sym, param_ref_node_id),
+                tail,
+                param_token.span,
+            ))
+        } else {
+            Err(Self::directive_sintatic_error(
+                DirectiveSyntaxErrorKind::UnexpectedToken {
+                    directive: DirectiveKind::MacroBody,
+                    expected: ExpectedToken::Ident,
+                },
+                param_token.span,
+            ))
+        }
     }
 }

@@ -3,7 +3,7 @@ use crate::{
     preprocessor::Preprocessor,
 };
 
-impl Preprocessor {
+impl Preprocessor<'_> {
     /// Indica se a linha parece uma diretiva `IF`.
     ///
     /// Forma canônica na linguagem:
@@ -22,7 +22,7 @@ impl Preprocessor {
     /// # Exemplos
     /// ```rust,ignore
     /// let span = Span { pos: 0, line: 1, column: 1, len: 1 };
-    /// let if_kw = preprocessor.keywords.if_kw;
+    /// let if_kw = preprocessor.language_symbols.preprocessor.if_;
     /// let cond = interner.entry("FLAG").or_insert();
     /// let add = interner.entry("ADD").or_insert();
     ///
@@ -61,7 +61,7 @@ impl Preprocessor {
             [
                 Token { kind: TokenKind::Ident(sym), .. },
                 ..
-            ] if *sym == self.keywords.if_kw
+            ] if *sym == self.language_symbols.preprocessor.if_
         )
     }
 }

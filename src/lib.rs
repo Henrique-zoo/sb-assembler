@@ -1,6 +1,9 @@
 pub mod assembler;
+pub(crate) mod assembly;
 pub mod errors;
 pub(crate) mod interner;
+pub(crate) mod language;
 pub(crate) mod lexer;
 pub(crate) mod parser;
 pub(crate) mod preprocessor;
+pub mod simulator;

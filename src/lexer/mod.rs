@@ -7,7 +7,8 @@
 //! - espaços horizontais são ignorados;
 //! - `\n` é emitido como `TokenKind::NewLine`;
 //! - comentários iniciados por `;` são ignorados até o fim da linha;
-//! - no fim da entrada, `TokenKind::Eof` é emitido uma única vez.
+//! - se a entrada não termina em `\n`, o lexer emite um `TokenKind::NewLine`
+//!   sintético no fim.
 //!
 //! Literais numéricos aceitos: decimal, `0x`/`0X` (hex) e `0b`/`0B` (bin).
 
@@ -73,8 +74,10 @@ pub(super) struct Lexer<'src, 'interner> {
     /// Iterador Unicode-safe sobre os caracteres da fonte.
     chars: std::str::CharIndices<'src>,
 
-    /// Indica se o token EOF já foi emitido.
-    emitted_eof: bool,
+    /// Indica se a quebra de linha sintética de fim de entrada já foi emitida.
+    emitted_final_newline: bool,
+    /// Indica se o último token emitido foi `NewLine`.
+    last_token_was_newline: bool,
 }
 
 impl<'src, 'interner> Lexer<'src, 'interner> {
@@ -85,8 +88,10 @@ impl<'src, 'interner> Lexer<'src, 'interner> {
     /// - `chars` recebe `src.char_indices()` para iteração Unicode-safe.
     /// - `peeked` já guarda o primeiro caractere (se existir), permitindo
     ///   olhar o caractere atual sem consumir.
-    /// - `emitted_eof` começa em `false`, para que o token EOF seja emitido
-    ///   exatamente uma vez.
+    /// - `emitted_final_newline` começa em `false`, para que a quebra de linha
+    ///   sintética seja emitida no máximo uma vez.
+    /// - `last_token_was_newline` começa em `false`, permitindo sintetizar a
+    ///   quebra final quando a entrada não termina em `\n`.
     pub(crate) fn new(src: &'src str, interner: &'interner mut Interner) -> Self {
         let mut chars = src.char_indices();
         let peeked = chars.next();
@@ -97,7 +102,8 @@ impl<'src, 'interner> Lexer<'src, 'interner> {
             cursor: Cursor::new(),
             peeked,
             chars,
-            emitted_eof: false,
+            emitted_final_newline: false,
+            last_token_was_newline: false,
         }
     }
 
@@ -116,11 +122,11 @@ impl<'src, 'interner> Lexer<'src, 'interner> {
         }
     }
 
-    /// Gera o `Span` de EOF na posição atual do cursor.
+    /// Gera o `Span` da quebra de linha sintética na posição atual do cursor.
     ///
-    /// Não altera estado do lexer. O span sempre tem `len = 0` e aponta
-    /// exatamente para o fim lógico da leitura.
-    fn eof_span(&self) -> Span {
+    /// Não altera estado do lexer. O span tem `len = 0` porque não corresponde a
+    /// um byte real no fonte; ele apenas marca a fronteira lógica da última linha.
+    fn synthetic_newline_span(&self) -> Span {
         Span {
             pos: self.cursor.offset,
             line: self.cursor.line,
@@ -151,7 +157,8 @@ impl<'src, 'interner> Lexer<'src, 'interner> {
     ///   - incrementa `cursor.column` em `1`
     /// - Atualiza `self.peeked` com o próximo caractere de `self.chars`.
     ///
-    /// Retorna `(offset_inicial, caractere)` consumido, ou `None` em EOF.
+    /// Retorna `(offset_inicial, caractere)` consumido, ou `None` no fim da
+    /// entrada.
     fn bump(&mut self) -> Option<(usize, char)> {
         let (start_offset, ch) = self.peeked?;
 
@@ -169,20 +176,61 @@ impl<'src, 'interner> Lexer<'src, 'interner> {
         Some((start_offset, ch))
     }
 
-    /// Consome whitespace horizontal (`' '`, `'\t'`, `'\r'`), sem tocar em `\n`.
+    /// Consome *whitespace* horizontal (`' '`, `'\t'`, `'\r'`), sem tocar em `\n`.
     ///
     /// Efeito no estado:
     /// - Repetidamente chama `bump()`, então avança `offset/column`
     ///   (e eventualmente linha/coluna no caso de `\r` não muda linha).
-    /// - Para assim que encontra algo que não seja whitespace horizontal
-    ///   ou quando chega em EOF.
+    /// - Para assim que encontra algo que não seja *whitespace* horizontal
+    ///   ou quando chega ao fim da entrada.
     fn skip_horizontal_whitespace(&mut self) {
         while matches!(self.peek(), Some(' ' | '\t' | '\r')) {
             let _ = self.bump();
         }
     }
 
-    /// Consome o conteúdo de comentário iniciado por `;` até antes de `\n` ou EOF.
+    /// Consome *whitespace* vertical (`'\n'`)
+    ///
+    /// Efeito no estado:
+    /// - Repetidamente chama `bump()`, então avança `line` e reinicia `offset`
+    /// - Para assim que encontra algo que não seja *whitespace* vertical
+    ///   ou quando chega ao fim da entrada.
+    fn skip_vertical_whitespace(&mut self) {
+        while matches!(self.peek(), Some('\n')) {
+            let _ = self.bump();
+        }
+    }
+
+    /// Consome qualquer *whitespace* ASCII (`' '`, `'\t'`, `'\r'`, `'\n'`).
+    ///
+    /// Estratégia:
+    /// - enquanto o caractere atual for whitespace:
+    ///   - usa [`Self::skip_vertical_whitespace`] quando for `'\n'`;
+    ///   - caso contrário, usa [`Self::skip_horizontal_whitespace`].
+    ///
+    /// Efeito no estado:
+    /// - avança `offset/line/column` conforme os caracteres consumidos;
+    /// - para no primeiro caractere não-whitespace ou no fim da entrada.
+    ///
+    /// Segurança no fim da entrada:
+    /// - a condição do loop usa `peek().unwrap_or_default()`, então não há
+    ///   `panic` por `unwrap()` em fim de entrada.
+    ///
+    /// Observação:
+    /// - esta função apenas avança o cursor; não emite tokens.
+    fn skip_whitespace(&mut self) {
+        while let Some(ch) = self.peek()
+            && ch.is_ascii_whitespace()
+        {
+            match ch {
+                '\n' => self.skip_vertical_whitespace(),
+                _ => self.skip_horizontal_whitespace(),
+            }
+        }
+    }
+
+    /// Consome o conteúdo de comentário iniciado por `;` até antes de `\n` ou do
+    /// fim da entrada.
     ///
     /// Efeito no estado:
     /// - Avança `cursor` chamando `bump()` para cada caractere do comentário.
@@ -195,6 +243,29 @@ impl<'src, 'interner> Lexer<'src, 'interner> {
                 break;
             }
             let _ = self.bump();
+        }
+    }
+
+    /// Consome uma sequência de *trivia*: comentários (`;...`) e whitespace.
+    ///
+    /// Esta rotina repete o consumo enquanto o próximo caractere for:
+    /// - `;` (comentário de linha, via [`Self::skip_comment`]);
+    /// - whitespace ASCII (via [`Self::skip_whitespace`]).
+    ///
+    /// Efeito no estado:
+    /// - avança `cursor` até o primeiro caractere "significativo" (não-trivia)
+    ///   ou até o fim da entrada.
+    ///
+    /// Observação:
+    /// - a função não produz tokens; apenas reposiciona o cursor.
+    fn skip_trivia(&mut self) {
+        while let Some(ch) = self.peek()
+            && (ch.is_ascii_whitespace() || ch == ';')
+        {
+            match ch {
+                ';' => self.skip_comment(),
+                _ => self.skip_whitespace(),
+            }
         }
     }
 
@@ -353,6 +424,12 @@ impl<'src, 'interner> Lexer<'src, 'interner> {
             },
         }
     }
+
+    /// Registra metadados sobre o último token emitido.
+    fn mark_emitted_token(&mut self, token: Token) -> Token {
+        self.last_token_was_newline = matches!(token.kind, TokenKind::NewLine);
+        token
+    }
 }
 
 impl<'src, 'intern> Iterator for Lexer<'src, 'intern> {
@@ -362,7 +439,9 @@ impl<'src, 'intern> Iterator for Lexer<'src, 'intern> {
     ///
     /// Fluxo e efeitos de estado:
     /// - Se não houver mais caractere em `peeked`:
-    ///   - emite EOF uma única vez (`emitted_eof = true`) e depois retorna `None`.
+    ///   - emite `NewLine` sintético uma única vez quando o último token emitido
+    ///     não foi `NewLine`;
+    ///   - retorna `None` quando a última linha já está fechada.
     /// - Antes de tokenizar, consome whitespace horizontal com
     ///   `skip_horizontal_whitespace()`.
     /// - Reconhece e consome comentários iniciados por `;` com `skip_comment()`,
@@ -374,12 +453,15 @@ impl<'src, 'intern> Iterator for Lexer<'src, 'intern> {
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             if self.peek().is_none() {
-                if self.emitted_eof {
+                if self.last_token_was_newline || self.emitted_final_newline {
                     return None;
                 }
 
-                self.emitted_eof = true;
-                return Some(Ok(Token::new(TokenKind::Eof, self.eof_span())));
+                self.emitted_final_newline = true;
+                return Some(Ok(self.mark_emitted_token(Token::new(
+                    TokenKind::NewLine,
+                    self.synthetic_newline_span(),
+                ))));
             }
 
             self.skip_horizontal_whitespace();
@@ -395,16 +477,42 @@ impl<'src, 'intern> Iterator for Lexer<'src, 'intern> {
                     self.skip_comment();
                     continue;
                 }
-                '\n' => Some(Ok(self.lex_newline())),
-                '&' => Some(Ok(self.lex_single_char(TokenKind::Ampersand))),
-                ',' => Some(Ok(self.lex_single_char(TokenKind::Comma))),
-                ':' => Some(Ok(self.lex_single_char(TokenKind::Colon))),
-                '+' => Some(Ok(self.lex_single_char(TokenKind::Plus))),
-                '-' => Some(Ok(self.lex_single_char(TokenKind::Minus))),
+                '\n' => {
+                    let token = self.lex_newline();
+                    self.skip_trivia();
+                    Some(Ok(self.mark_emitted_token(token)))
+                }
+                '&' => {
+                    let token = self.lex_single_char(TokenKind::Ampersand);
+                    Some(Ok(self.mark_emitted_token(token)))
+                }
+                ',' => {
+                    let token = self.lex_single_char(TokenKind::Comma);
+                    Some(Ok(self.mark_emitted_token(token)))
+                }
+                ':' => {
+                    let token = self.lex_single_char(TokenKind::Colon);
+                    self.skip_trivia();
+                    Some(Ok(self.mark_emitted_token(token)))
+                }
+                '+' => {
+                    let token = self.lex_single_char(TokenKind::Plus);
+                    Some(Ok(self.mark_emitted_token(token)))
+                }
+                '-' => {
+                    let token = self.lex_single_char(TokenKind::Minus);
+                    Some(Ok(self.mark_emitted_token(token)))
+                }
 
-                '0'..='9' => Some(self.lex_number()),
+                '0'..='9' => Some(
+                    self.lex_number()
+                        .map(|token| self.mark_emitted_token(token)),
+                ),
 
-                'A'..='Z' | 'a'..='z' | '_' => Some(Ok(self.lex_ident())),
+                'A'..='Z' | 'a'..='z' | '_' => {
+                    let token = self.lex_ident();
+                    Some(Ok(self.mark_emitted_token(token)))
+                }
 
                 other => Some(Err(self.invalid_char_error(other))),
             };
