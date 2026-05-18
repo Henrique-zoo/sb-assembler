@@ -14,6 +14,7 @@
 mod assembly;
 mod lexer;
 mod preprocessor;
+mod simulation;
 
 /// Reexports de erros de montagem.
 pub(crate) use assembly::*;
@@ -21,3 +22,5 @@ pub(crate) use assembly::*;
 pub(crate) use lexer::*;
 /// Reexports de erros do pré-processador.
 pub(crate) use preprocessor::*;
+/// Reexports de erros de simulação.
+pub use simulation::*;

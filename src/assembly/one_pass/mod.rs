@@ -28,7 +28,9 @@ use crate::{
     },
 };
 
-mod types;
+pub(crate) mod types;
+
+pub(crate) use types::ObjectProgram;
 
 impl<'a> OnePassAssembler<'a> {
     /// Executa a montagem de uma passagem sobre um programa parseado.
