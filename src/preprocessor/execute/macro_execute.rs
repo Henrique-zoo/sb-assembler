@@ -33,7 +33,10 @@ impl Preprocessor<'_> {
     /// Fluxo:
     /// 1. consome linhas do iterador;
     /// 2. quando encontra candidata a `ENDMACRO`, valida a linha e encerra;
-    /// 3. para linhas de conteúdo não vazias, parseia e acumula no body.
+    /// 3. se encontra outro cabeçalho `MACRO` antes de `ENDMACRO`, sinaliza
+    ///    que a macro atual ficou sem encerramento e deixa a nova definição
+    ///    para o orquestrador processar;
+    /// 4. para linhas de conteúdo não vazias, parseia e acumula no body.
     ///
     /// Retorno:
     /// - `Ok(Vec<MacroBodyLine>)` com as linhas parseadas da definição.
@@ -41,7 +44,8 @@ impl Preprocessor<'_> {
     /// Erros:
     /// - propaga erro sintático de `ENDMACRO` inválido;
     /// - propaga erro sintático de parsing de uma linha de body;
-    /// - `UnterminatedMacro` quando o iterador acaba sem `ENDMACRO`.
+    /// - `UnterminatedMacro` quando o iterador acaba sem `ENDMACRO` ou quando
+    ///   outra definição de macro começa antes do encerramento da atual.
     ///
     /// Efeito colateral:
     /// - avança `lines` consumindo toda a definição da macro.
@@ -53,11 +57,25 @@ impl Preprocessor<'_> {
         let mut body = Vec::new();
         let mut unterminated_span = self.span_of_node(header_node_id);
 
-        while let Some(logical_line) = lines.next() {
+        while let Some(logical_line) = lines.peek() {
             if self.looks_like_endmacro_line(&logical_line.content) {
+                let logical_line = lines
+                    .next()
+                    .expect("linha observada por peek deve existir em next");
                 self.parse_endmacro_line(&logical_line.content)?;
                 return Ok(body);
             }
+
+            if self.looks_like_macro_header(&logical_line.content) {
+                return Err(Self::macro_definition_semantic_error(
+                    PreprocessorErrorKind::UnterminatedMacro,
+                    logical_line.span(),
+                ));
+            }
+
+            let logical_line = lines
+                .next()
+                .expect("linha observada por peek deve existir em next");
 
             if logical_line.content.first().is_some() {
                 let parsed_line =

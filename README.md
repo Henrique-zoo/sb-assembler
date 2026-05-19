@@ -6,25 +6,6 @@ trabalhos de Software Básico: a partir de um arquivo `.asm`, gera um arquivo
 pré-processado `.pre`; a partir do `.pre`, gera os artefatos `.obj` e `.pen`;
 e, a partir de um `.obj`, executa o programa em uma máquina simulada.
 
-## Funcionalidades
-
-- Análise léxica com comentários iniciados por `;`.
-- Pré-processamento com `SECTION TEXT`, `SECTION DATA`, `MACRO`, `ENDMACRO`,
-  `EQU` e `IF`.
-- Parser para instruções de `TEXT` e diretivas montáveis de `DATA`.
-- Montagem em uma passagem, gerando:
-  - `.obj`: programa objeto resolvido;
-  - `.pen`: programa com listas de pendência da montagem em uma passagem.
-- Simulador independente do assembler, capaz de executar arquivos `.obj`.
-- Diagnósticos por estágio: lexer, pré-processador, parser, montagem e
-  simulação.
-
-## Requisitos
-
-- Rust com Cargo.
-
-O projeto não possui dependências externas além da biblioteca padrão.
-
 ## Uso
 
 Execute o binário passando um único arquivo de entrada:
@@ -48,6 +29,25 @@ O modo de operação é escolhido pela extensão do arquivo:
 | `.obj` | Executa o simulador | escreve a saída do programa no stdout |
 
 Arquivos com outras extensões são rejeitados.
+
+## Funcionalidades
+
+- Análise léxica com comentários iniciados por `;`.
+- Pré-processamento com `SECTION TEXT`, `SECTION DATA`, `MACRO`, `ENDMACRO`,
+  `EQU` e `IF`.
+- Parser para instruções de `TEXT` e diretivas montáveis de `DATA`.
+- Montagem em uma passagem, gerando:
+  - `.obj`: programa objeto resolvido;
+  - `.pen`: programa com listas de pendência da montagem em uma passagem.
+- Simulador independente do assembler, capaz de executar arquivos `.obj`.
+- Diagnósticos por estágio: lexer, pré-processador, parser, montagem e
+  simulação.
+
+## Requisitos
+
+- Rust com Cargo.
+
+O projeto não possui dependências externas além da biblioteca padrão.
 
 ## Exemplo
 

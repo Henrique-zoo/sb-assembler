@@ -14,9 +14,6 @@ use crate::lexer::Span;
 pub enum LexerErrorKind {
     /// Caractere isolado que não pertence ao alfabeto léxico esperado.
     InvalidChar(char),
-    /// Sequência que aparenta ser identificador, mas quebra as regras da
-    /// linguagem.
-    InvalidIdentifier(String),
     /// Sequência que aparenta ser número, mas não representa literal válido.
     InvalidNumber(String),
 }

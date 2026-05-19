@@ -244,13 +244,14 @@ impl<'a> OnePassAssembler<'a> {
                 offset,
                 node_id,
             } => {
-                let span = node_spans.span_of(node_id);
-                let Some(offset) = self.parse_address_offset(offset.literal, span) else {
-                    self.push_resolved_word(0, span);
+                let operand_span = node_spans.span_of(node_id);
+                let offset_span = node_spans.span_of(offset.node_id);
+                let Some(offset) = self.parse_address_offset(offset.literal, offset_span) else {
+                    self.push_resolved_word(0, operand_span);
                     return;
                 };
 
-                self.emit_symbol_address(base, offset, span);
+                self.emit_symbol_address(base, offset, operand_span);
             }
         }
     }
@@ -385,17 +386,22 @@ impl<'a> OnePassAssembler<'a> {
     fn emit_data_directive(&mut self, directive: DataDirective, node_spans: &NodeSpans) {
         match directive {
             DataDirective::Const { value, node_id } => {
-                let span = node_spans.span_of(node_id);
+                let directive_span = node_spans.span_of(node_id);
+                let value_span = node_spans.span_of(value.node_id);
                 let value = self
-                    .parse_word_literal(value.literal, NumberContext::ConstValue, span)
+                    .parse_word_literal(value.literal, NumberContext::ConstValue, value_span)
                     .unwrap_or(0);
-                self.push_resolved_word(value, span);
+                self.push_resolved_word(value, directive_span);
             }
             DataDirective::Space { amount, node_id } => {
-                let span = node_spans.span_of(node_id);
-                if let Some(amount) = self.parse_space_amount(amount, span) {
+                let directive_span = node_spans.span_of(node_id);
+                let amount_span = amount
+                    .as_ref()
+                    .map(|amount| node_spans.span_of(amount.node_id))
+                    .unwrap_or(directive_span);
+                if let Some(amount) = self.parse_space_amount(amount, amount_span) {
                     for _ in 0..amount {
-                        self.push_resolved_word(0, span);
+                        self.push_resolved_word(0, directive_span);
                     }
                 }
             }

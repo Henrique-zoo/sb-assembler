@@ -34,13 +34,6 @@ pub(crate) struct ParsedProgram {
     pub node_spans: NodeSpans,
 }
 
-impl ParsedProgram {
-    /// Resolve o [`Span`] associado a um [`NodeId`] da IR deste programa.
-    pub(crate) fn span_of_node(&self, node_id: NodeId) -> Span {
-        self.node_spans.span_of(node_id)
-    }
-}
-
 /// Tabela lateral de spans dos nós produzidos pelo parser.
 ///
 /// A IR do parser carrega apenas [`NodeId`]. Esta estrutura é o ponto que

@@ -31,7 +31,6 @@ impl Preprocessor<'_> {
     /// Contrato:
     /// - consome o prefixo `SECTION <TEXT|DATA>` inteiro;
     /// - rejeita qualquer sufixo remanescente;
-    /// - aloca um `NodeId` cobrindo a diretiva completa;
     /// - não altera `current_section`. Esse efeito pertence a
     ///   [`Self::execute_section_directive`].
     pub(in crate::preprocessor) fn parse_section_line(
@@ -87,9 +86,7 @@ impl Preprocessor<'_> {
         };
 
         self.ensure_no_trailing_tokens(tail, DirectiveKind::Section)?;
-        let span = self.consumed_prefix_span(line, tail, fallback_span);
-        let node_id = self.alloc_node_id(span);
 
-        Ok(SectionDecl { node_id, section })
+        Ok(SectionDecl { section })
     }
 }

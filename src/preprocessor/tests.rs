@@ -477,3 +477,32 @@ fn reports_unterminated_macro_in_complex_preprocessor_flow() {
         PreprocessorErrorKind::UnterminatedMacro
     ));
 }
+
+#[test]
+fn reports_unterminated_macro_when_another_macro_starts_before_endmacro() {
+    let source = concat!(
+        "BROKEN: MACRO &A\n",
+        "LOAD &A\n",
+        "NEXT: MACRO &B\n",
+        "STORE &B\n",
+        "ENDMACRO\n",
+        "SECTION TEXT\n",
+        "NEXT VALUE\n",
+    );
+
+    let errors = preprocess_err(source);
+    let rendered_output = render_preprocessor_errors(&errors);
+    print_preprocessor_case(
+        "reports_unterminated_macro_when_another_macro_starts_before_endmacro",
+        source,
+        &rendered_output,
+    );
+
+    assert_eq!(errors.len(), 1);
+    assert!(matches!(
+        errors[0].kind,
+        PreprocessorErrorKind::UnterminatedMacro
+    ));
+    assert_eq!(errors[0].span.line, 3);
+    assert_eq!(errors[0].span.column, 1);
+}

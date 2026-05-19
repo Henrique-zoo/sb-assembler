@@ -60,16 +60,6 @@ impl NumericLiteral {
     pub(crate) fn symbol(self) -> Symbol {
         self.symbol
     }
-
-    /// Indica se o literal preserva sinal explícito.
-    pub(crate) fn is_signed(self) -> bool {
-        self.sign.is_some()
-    }
-
-    /// Indica se o literal não possui sinal explícito.
-    pub(crate) fn is_unsigned(self) -> bool {
-        self.sign.is_none()
-    }
 }
 
 impl NumberSign {

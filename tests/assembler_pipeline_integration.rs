@@ -126,6 +126,64 @@ fn assembler_reports_preprocessor_error_and_does_not_write_pre_file() {
 }
 
 #[test]
+fn assembler_reports_unterminated_macro_when_new_macro_starts_inside_previous_one() {
+    let base = temp_base_path("nested-macro-error");
+    let pre_path = base.with_extension("pre");
+    let source = concat!(
+        "ACCUM: MACRO &DST, &SRC, &TMP\n",
+        "LOAD &TMP\n",
+        "ADD &TMP, &SRC\n",
+        "STORE &DST\n",
+        "\n",
+        "CLEAR: MACRO &DST\n",
+        "LOAD ZERO\n",
+        "STORE &DST\n",
+        "ENDMACRO\n",
+        "\n",
+        "ZERO EQU 0\n",
+        "ENABLE_LOG EQU 1\n",
+        "\n",
+        "SECTION DATA\n",
+        "INPUT SPACE\n",
+        "AUX SPACE\n",
+        "RESULT SPACE\n",
+        "LOGPTR SPACE\n",
+        "\n",
+        "SECTION TEXT\n",
+        "ACCUM RESULT, INPUT, AUX\n",
+        "IF ENABLE_LOG\n",
+        "STORE LOGPTR\n",
+        "IF 0\n",
+        "ADD INPUT, 1\n",
+        "CLEAR AUX\n",
+    );
+
+    let err = Assembler::new(source)
+        .generate_preprocessed_file(base.to_str().unwrap())
+        .expect_err("macro anterior sem ENDMACRO deve falhar no pré-processador");
+    let rendered = err.to_string();
+
+    assert!(
+        rendered.contains("CLEAR: MACRO &DST"),
+        "diagnóstico deve apontar para a macro iniciada antes do ENDMACRO:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("definição de macro sem `ENDMACRO`"),
+        "diagnóstico deve reportar macro não terminada:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("CLEAR AUX"),
+        "CLEAR deve ser processada como macro válida, não como macro indefinida:\n{rendered}"
+    );
+    assert!(
+        !pre_path.exists(),
+        "erro de pré-processamento não deve gerar .pre"
+    );
+
+    cleanup(&[pre_path]);
+}
+
+#[test]
 fn assembler_reports_parser_error_and_does_not_write_artifacts() {
     let base = temp_base_path("parser-error");
     let obj_path = base.with_extension("obj");
@@ -152,7 +210,17 @@ fn assembler_reports_assembly_error_and_does_not_write_artifacts() {
         .generate_obj_and_pen_files(base.to_str().unwrap())
         .expect_err("símbolo indefinido deve falhar na montagem");
 
-    assert_single_diagnostic(err, AssemblerStage::Assembly, None, None, "MISSING");
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("2 | LOAD MISSING"),
+        "diagnóstico deve exibir a linha com erro:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("|      ^^^^^^^ símbolo `MISSING` não foi definido"),
+        "diagnóstico deve marcar o símbolo indefinido:\n{rendered}"
+    );
+
+    assert_single_diagnostic(err, AssemblerStage::Assembly, Some(2), Some(6), "MISSING");
     assert!(!obj_path.exists(), "erro de montagem não deve gerar .obj");
     assert!(!pen_path.exists(), "erro de montagem não deve gerar .pen");
 

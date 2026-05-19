@@ -100,13 +100,19 @@ impl Preprocessor<'_> {
         macro_def: &Macro,
         macro_call: &MacroCall,
     ) -> Result<(), PreprocessorError> {
-        if macro_call.args.len() != macro_def.header.params.len() {
+        let expected = macro_def.header.params.len();
+        let found = macro_call.args.len();
+
+        if found != expected {
+            let span = macro_call
+                .args
+                .get(expected)
+                .map(|arg| self.span_of_node(arg.node_id()))
+                .unwrap_or_else(|| self.span_of_node(macro_call.node_id));
+
             return Err(Self::macro_call_semantic_error(
-                MacroCallSemanticErrorKind::WrongArgCount {
-                    expected: macro_def.header.params.len(),
-                    found: macro_call.args.len(),
-                },
-                self.span_of_node(macro_call.node_id),
+                MacroCallSemanticErrorKind::WrongArgCount { expected, found },
+                span,
             ));
         }
 

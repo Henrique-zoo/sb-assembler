@@ -75,8 +75,6 @@ pub(crate) enum IfDirectiveSemanticErrorKind {
     InvalidConditionNumber { value: Symbol },
     /// Identificador da condição não foi definido.
     UndefinedIdentifier { ident: TokenKind },
-    /// Identificador tem valor inválido.
-    InvalidConditionIdentifier { ident: TokenKind, value: Symbol },
     /// Linha seguinte não existe
     MissingNextLine,
 }

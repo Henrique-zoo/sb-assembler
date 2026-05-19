@@ -221,19 +221,6 @@ pub(crate) enum Operand {
     },
 }
 
-impl Operand {
-    /// Retorna o `NodeId` associado ao operando.
-    ///
-    /// Útil para código semântico que precisa emitir erro sobre o operando
-    /// específico, independentemente de ele ter vindo como número ou
-    /// identificador.
-    pub(crate) fn node_id(&self) -> NodeId {
-        match self {
-            Self::Number { node_id, .. } | Self::Ident { node_id, .. } => *node_id,
-        }
-    }
-}
-
 /// Argumento posicional de chamada de macro.
 ///
 /// Diferente de [`Operand`], esse tipo representa substituição textual usada
@@ -333,8 +320,6 @@ impl MacroCallArg {
 /// - a diretiva não é emitida no [`crate::preprocessor::types::PreprocessedProgram`].
 #[derive(Debug, Clone)]
 pub(crate) struct SectionDecl {
-    /// `NodeId` da diretiva inteira.
-    pub node_id: NodeId,
     /// Seção alvo que deve se tornar ativa.
     pub section: Section,
 }
@@ -350,11 +335,11 @@ pub(crate) struct SectionDecl {
 /// - `alias` é o identificador definido pela diretiva;
 /// - `value` é mantido como [`Operand`] até a execução resolver número ou
 ///   identificador;
+/// - diagnósticos semânticos usam o `NodeId` do valor, que é o ponto exato de
+///   falha;
 /// - a execução registra o alias na tabela de `EQU`.
 #[derive(Debug, Clone)]
 pub(crate) struct EquDecl {
-    /// `NodeId` da diretiva inteira.
-    pub node_id: NodeId,
     /// Símbolo internado do alias definido pela diretiva.
     pub alias: Symbol,
     /// Valor sintático associado ao alias.

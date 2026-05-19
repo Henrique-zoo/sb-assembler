@@ -47,10 +47,9 @@ impl Preprocessor<'_> {
     /// 4. parseia valor com [`Self::parse_equ_value`];
     /// 5. garante ausência de tokens extras com
     ///    [`Self::ensure_no_trailing_tokens`];
-    /// 6. consolida `span` final com [`Self::consumed_prefix_span`].
     ///
     /// Retorno:
-    /// - `Ok(EquDecl { node_id, alias, value })` quando a diretiva está correta.
+    /// - `Ok(EquDecl { alias, value })` quando a diretiva está correta.
     ///
     /// Erros:
     /// - propaga falhas de alias ausente/inválido;
@@ -82,17 +81,11 @@ impl Preprocessor<'_> {
             fallback_span,
         )?;
 
-        let (value, tail, fallback_span) = self.parse_equ_value(tail, fallback_span)?;
+        let (value, tail, _fallback_span) = self.parse_equ_value(tail, fallback_span)?;
 
         self.ensure_no_trailing_tokens(tail, DirectiveKind::Equ)?;
-        let span = self.consumed_prefix_span(line, tail, fallback_span);
-        let node_id = self.alloc_node_id(span);
 
-        Ok(EquDecl {
-            node_id,
-            alias,
-            value,
-        })
+        Ok(EquDecl { alias, value })
     }
 
     /// Extrai e valida o alias inicial da diretiva `EQU`.

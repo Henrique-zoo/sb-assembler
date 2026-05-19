@@ -83,6 +83,7 @@ impl AssemblerStage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssemblerDiagnostic {
     stage: AssemblerStage,
+    span: Option<Span>,
     line: Option<u32>,
     column: Option<u32>,
     message: String,
@@ -90,14 +91,13 @@ pub struct AssemblerDiagnostic {
 
 impl AssemblerDiagnostic {
     fn new(stage: AssemblerStage, span: Span, message: String) -> Self {
-        let (line, column) = if span == Span::default() {
-            (None, None)
-        } else {
-            (Some(span.line), Some(span.column))
-        };
+        let span = (span != Span::default()).then_some(span);
+        let line = span.map(|span| span.line);
+        let column = span.map(|span| span.column);
 
         Self {
             stage,
+            span,
             line,
             column,
             message,
@@ -144,24 +144,87 @@ impl fmt::Display for AssemblerDiagnostic {
 /// Erro retornado pela fachada de alto nível do assembler.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssemblerError {
+    source: String,
     diagnostics: Vec<AssemblerDiagnostic>,
 }
 
 impl AssemblerError {
-    fn new(diagnostics: Vec<AssemblerDiagnostic>) -> Self {
-        Self { diagnostics }
+    fn new(source: &str, diagnostics: Vec<AssemblerDiagnostic>) -> Self {
+        Self {
+            source: source.to_owned(),
+            diagnostics,
+        }
     }
 
     /// Retorna os diagnósticos acumulados pelo estágio que falhou.
     pub fn diagnostics(&self) -> &[AssemblerDiagnostic] {
         &self.diagnostics
     }
+
+    fn source_line(&self, line_number: u32) -> Option<&str> {
+        self.source
+            .lines()
+            .nth(line_number.saturating_sub(1) as usize)
+    }
+
+    fn render_snippet(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        diagnostic: &AssemblerDiagnostic,
+    ) -> fmt::Result {
+        let Some(span) = diagnostic.span else {
+            return Ok(());
+        };
+        let Some(line_text) = self.source_line(span.line) else {
+            return Ok(());
+        };
+
+        let line_number = span.line.to_string();
+        let gutter_width = line_number.len();
+        let marker_prefix = Self::marker_prefix(line_text, span.column);
+        let marker_width = Self::marker_width(&self.source, span);
+
+        writeln!(f, "{:>width$} |", "", width = gutter_width)?;
+        writeln!(
+            f,
+            "{line_number:>width$} | {line_text}",
+            width = gutter_width
+        )?;
+        writeln!(
+            f,
+            "{:>width$} | {marker_prefix}{} {}",
+            "",
+            "^".repeat(marker_width),
+            diagnostic.message,
+            width = gutter_width
+        )
+    }
+
+    fn marker_prefix(line_text: &str, column: u32) -> String {
+        line_text
+            .chars()
+            .take(column.saturating_sub(1) as usize)
+            .map(|ch| if ch == '\t' { '\t' } else { ' ' })
+            .collect()
+    }
+
+    fn marker_width(source: &str, span: Span) -> usize {
+        source
+            .get(span.pos..span.pos.saturating_add(span.len))
+            .map(|slice| slice.chars().count().max(1))
+            .unwrap_or_else(|| span.len.max(1))
+    }
 }
 
 impl fmt::Display for AssemblerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for diagnostic in &self.diagnostics {
+        for (idx, diagnostic) in self.diagnostics.iter().enumerate() {
             writeln!(f, "{diagnostic}")?;
+            self.render_snippet(f, diagnostic)?;
+
+            if idx + 1 < self.diagnostics.len() {
+                writeln!(f)?;
+            }
         }
 
         Ok(())
@@ -284,12 +347,13 @@ impl<'a> Assembler<'a> {
         program: PreprocessedProgram,
     ) -> Result<ParsedProgram, Vec<ParserDiagnostic>> {
         let parser = Parser::new(&self.language_symbols);
+        let mut node_spans = NodeSpans::new();
         let mut diagnostics = Vec::new();
         let mut text = Vec::new();
         let mut data = Vec::new();
 
         for line in &program.text {
-            match parser.parse_text_line(&line.content) {
+            match parser.parse_text_line(&line.content, &mut node_spans) {
                 Ok(parsed_line) => text.push(parsed_line),
                 Err(message) => diagnostics.push(ParserDiagnostic {
                     section: "TEXT",
@@ -300,7 +364,7 @@ impl<'a> Assembler<'a> {
         }
 
         for line in &program.data {
-            match parser.parse_data_line(&line.content) {
+            match parser.parse_data_line(&line.content, &mut node_spans) {
                 Ok(parsed_line) => data.push(parsed_line),
                 Err(message) => diagnostics.push(ParserDiagnostic {
                     section: "DATA",
@@ -314,7 +378,7 @@ impl<'a> Assembler<'a> {
             Ok(ParsedProgram {
                 text,
                 data,
-                node_spans: NodeSpans::new(),
+                node_spans,
             })
         } else {
             Err(diagnostics)
@@ -345,16 +409,13 @@ impl<'a> Assembler<'a> {
             PipelineError::Assembly(errors) => self.assembly_diagnostics(&errors),
         };
 
-        AssemblerError::new(diagnostics)
+        AssemblerError::new(self.source, diagnostics)
     }
 
     fn lexer_diagnostic(&self, err: &LexerError) -> AssemblerDiagnostic {
         let message = match &err.kind {
             LexerErrorKind::InvalidChar(ch) => {
                 format!("caractere inválido '{}'", ch.escape_default())
-            }
-            LexerErrorKind::InvalidIdentifier(text) => {
-                format!("identificador inválido `{text}`")
             }
             LexerErrorKind::InvalidNumber(text) => {
                 format!("número inválido `{text}`")
@@ -472,13 +533,6 @@ impl<'a> Assembler<'a> {
                     format!(
                         "identificador indefinido em `IF`: {}",
                         self.token_kind_name(*ident)
-                    )
-                }
-                IfDirectiveSemanticErrorKind::InvalidConditionIdentifier { ident, value } => {
-                    format!(
-                        "identificador inválido em `IF`: {} com valor `{}`",
-                        self.token_kind_name(*ident),
-                        self.symbol_name(*value)
                     )
                 }
                 IfDirectiveSemanticErrorKind::MissingNextLine => {
