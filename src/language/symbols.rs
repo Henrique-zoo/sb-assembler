@@ -45,8 +45,8 @@ pub(crate) struct InstructionSymbols {
     pub add: Symbol,
     /// Instrução `SUB`.
     pub sub: Symbol,
-    /// Instrução `MULT`.
-    pub mult: Symbol,
+    /// Instrução `MUL`.
+    pub mul: Symbol,
     /// Instrução `DIV`.
     pub div: Symbol,
     /// Instrução `JMP`.
@@ -116,7 +116,7 @@ impl LanguageSymbols {
         let instructions = InstructionSymbols {
             add: interner.entry("ADD").or_insert(),
             sub: interner.entry("SUB").or_insert(),
-            mult: interner.entry("MULT").or_insert(),
+            mul: interner.entry("MUL").or_insert(),
             div: interner.entry("DIV").or_insert(),
             jmp: interner.entry("JMP").or_insert(),
             jmpn: interner.entry("JMPN").or_insert(),
@@ -133,7 +133,7 @@ impl LanguageSymbols {
         let instruction_set = [
             instructions.add,
             instructions.sub,
-            instructions.mult,
+            instructions.mul,
             instructions.div,
             instructions.jmp,
             instructions.jmpn,
@@ -166,7 +166,7 @@ impl LanguageSymbols {
         let mut mnemonic_instruction_map = HashMap::<Symbol, Mnemonic>::new();
         mnemonic_instruction_map.insert(instructions.add, Mnemonic::Add);
         mnemonic_instruction_map.insert(instructions.sub, Mnemonic::Sub);
-        mnemonic_instruction_map.insert(instructions.mult, Mnemonic::Mul);
+        mnemonic_instruction_map.insert(instructions.mul, Mnemonic::Mul);
         mnemonic_instruction_map.insert(instructions.div, Mnemonic::Div);
         mnemonic_instruction_map.insert(instructions.jmp, Mnemonic::Jmp);
         mnemonic_instruction_map.insert(instructions.jmpn, Mnemonic::Jmpn);
