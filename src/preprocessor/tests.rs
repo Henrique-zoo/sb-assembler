@@ -247,6 +247,24 @@ fn preprocesses_full_program_with_all_valid_directive_forms() {
 }
 
 #[test]
+fn accepts_labeled_endmacro_terminator() {
+    let source = concat!(
+        "WRAP: MACRO &VALUE\n",
+        "LOAD &VALUE\n",
+        "CLOSE:\n",
+        "ENDMACRO\n",
+        "SECTION TEXT\n",
+        "WRAP N\n",
+        "OUTPUT N\n",
+    );
+
+    let (program, interner) = preprocess_ok(source);
+    let rendered_text = render_preprocessor_lines(&program.text, &interner);
+
+    assert_eq!(rendered_text, vec!["LOAD N", "CLOSE :", "OUTPUT N"]);
+}
+
+#[test]
 fn replaces_equ_aliases_only_in_data_directive_operands() {
     let source = concat!(
         "COUNT EQU 3\n",
