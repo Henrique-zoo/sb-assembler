@@ -239,6 +239,12 @@ struct ParserDiagnostic {
     span: Span,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum PreprocessedSourceSection {
+    Text,
+    Data,
+}
+
 enum PipelineError {
     Lexer(LexerError),
     Preprocessor(Vec<PreprocessorError>),
@@ -274,7 +280,7 @@ impl<'a> Assembler<'a> {
     /// O método interrompe o pipeline no primeiro estágio com erro e não grava
     /// artefatos parciais.
     pub fn generate_obj_and_pen_files(mut self, file_name: &str) -> Result<(), AssemblerError> {
-        let preprocessed_tokens = match self.run_preprocessor() {
+        let preprocessed_tokens = match self.read_preprocessed_program() {
             Ok(preprocessed_tokens) => preprocessed_tokens,
             Err(err) => return Err(self.assembler_error(err)),
         };
@@ -333,6 +339,114 @@ impl<'a> Assembler<'a> {
         preprocessor
             .process(tokens, &mut self.interner)
             .map_err(PipelineError::Preprocessor)
+    }
+
+    fn read_preprocessed_program(&mut self) -> Result<PreprocessedProgram, PipelineError> {
+        let tokens = self.collect_tokens().map_err(PipelineError::Lexer)?;
+        let mut program = PreprocessedProgram {
+            text: Vec::new(),
+            data: Vec::new(),
+        };
+        let mut current_section = None;
+        let mut diagnostics = Vec::new();
+
+        for logical_line in Self::logical_lines_from_tokens(tokens) {
+            if logical_line.content.is_empty() {
+                continue;
+            }
+
+            match self.parse_preprocessed_section_line(&logical_line) {
+                Ok(Some(section)) => {
+                    current_section = Some(section);
+                }
+                Ok(None) => match current_section {
+                    Some(PreprocessedSourceSection::Text) => program.text.push(logical_line),
+                    Some(PreprocessedSourceSection::Data) => program.data.push(logical_line),
+                    None => diagnostics.push(ParserDiagnostic {
+                        section: "PRE",
+                        message: "linha fora de SECTION TEXT/DATA".to_owned(),
+                        span: Self::logical_line_span(&logical_line),
+                    }),
+                },
+                Err(diagnostic) => diagnostics.push(diagnostic),
+            }
+        }
+
+        if diagnostics.is_empty() {
+            Ok(program)
+        } else {
+            Err(PipelineError::Parser(diagnostics))
+        }
+    }
+
+    fn logical_lines_from_tokens(tokens: Vec<Token>) -> Vec<LogicalLine> {
+        let mut lines = Vec::new();
+        let mut current_line = Vec::new();
+
+        for token in tokens {
+            if matches!(token.kind, TokenKind::NewLine) {
+                lines.push(LogicalLine {
+                    content: std::mem::take(&mut current_line),
+                    terminator: token,
+                });
+            } else {
+                current_line.push(token);
+            }
+        }
+
+        lines
+    }
+
+    fn parse_preprocessed_section_line(
+        &self,
+        logical_line: &LogicalLine,
+    ) -> Result<Option<PreprocessedSourceSection>, ParserDiagnostic> {
+        let line = logical_line.content.as_slice();
+        let Some(Token {
+            kind: TokenKind::Ident(section),
+            ..
+        }) = line.first()
+        else {
+            return Ok(None);
+        };
+
+        if *section != self.language_symbols.preprocessor.section {
+            return Ok(None);
+        }
+
+        let valid_section = match line {
+            [
+                Token {
+                    kind: TokenKind::Ident(_),
+                    ..
+                },
+                Token {
+                    kind: TokenKind::Ident(kind),
+                    ..
+                },
+            ] if *kind == self.language_symbols.sections.text => {
+                Some(PreprocessedSourceSection::Text)
+            }
+            [
+                Token {
+                    kind: TokenKind::Ident(_),
+                    ..
+                },
+                Token {
+                    kind: TokenKind::Ident(kind),
+                    ..
+                },
+            ] if *kind == self.language_symbols.sections.data => {
+                Some(PreprocessedSourceSection::Data)
+            }
+            _ => None,
+        };
+
+        valid_section.map(Some).ok_or_else(|| ParserDiagnostic {
+            section: "PRE",
+            message: "declaração de seção inválida no arquivo preprocessado".to_owned(),
+            span: Self::logical_line_span(logical_line),
+        })
     }
 
     fn collect_tokens(&mut self) -> Result<Vec<Token>, LexerError> {
