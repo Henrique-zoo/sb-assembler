@@ -81,6 +81,29 @@ value: const 42
 }
 
 #[test]
+fn assembler_does_not_preprocess_pre_file_before_generating_artifacts() {
+    let base = temp_base_path("pre-bypasses-preprocessor");
+    let obj_path = base.with_extension("obj");
+    let pen_path = base.with_extension("pen");
+    let source = "SECTION TEXT\nFOO TRES\nSECTION DATA\nTRES: CONST 3\n";
+
+    let err = Assembler::new(source)
+        .generate_obj_and_pen_files(base.to_str().unwrap())
+        .expect_err("mnemônico inválido em .pre deve falhar no parser");
+    let rendered = err.to_string();
+
+    assert_single_diagnostic(err, AssemblerStage::Parser, Some(2), Some(1), "seção TEXT");
+    assert!(
+        !rendered.contains("macro não definida"),
+        ".pre não deve passar pelo preprocessador:\n{rendered}"
+    );
+    assert!(!obj_path.exists(), "erro de parser não deve gerar .obj");
+    assert!(!pen_path.exists(), "erro de parser não deve gerar .pen");
+
+    cleanup(&[obj_path, pen_path]);
+}
+
+#[test]
 fn assembler_reports_lexer_error_and_does_not_write_pre_file() {
     let base = temp_base_path("lexer-error");
     let pre_path = base.with_extension("pre");
