@@ -65,7 +65,7 @@ impl Preprocessor<'_> {
         ) || matches!(
             line,
             [
-                Token { kind: TokenKind::Ident(_), ..},
+                Token { kind: TokenKind::Ident(_), .. },
                 Token { kind: TokenKind::Colon, .. },
                 Token { kind: TokenKind::Ident(sym), .. },
                 ..
@@ -75,13 +75,14 @@ impl Preprocessor<'_> {
 
     /// Indica se a linha parece encerrar uma definição de macro.
     ///
-    /// Forma canônica na linguagem:
+    /// Formas candidatas na linguagem:
     /// ```ignore
     /// ENDMACRO
+    /// <Label>: ENDMACRO
     /// ```
     ///
     /// Critério de triagem:
-    /// - o prefixo deve ser `ENDMACRO`;
+    /// - o prefixo deve ser `ENDMACRO` ou `<Ident>: ENDMACRO`;
     /// - aceita qualquer sufixo após o prefixo reconhecido.
     ///
     /// Contrato:
@@ -99,10 +100,12 @@ impl Preprocessor<'_> {
     ///     Token::new(TokenKind::Ident(endmacro_kw), span),
     /// ]));
     ///
-    /// // Caso permissivo (`:` opcional)
+    /// // Caso rotulado
+    /// let label = interner.entry("FIM").or_insert();
     /// assert!(preprocessor.looks_like_endmacro_line(&[
-    ///     Token::new(TokenKind::Ident(endmacro_kw), span),
+    ///     Token::new(TokenKind::Ident(label), span),
     ///     Token::new(TokenKind::Colon, span),
+    ///     Token::new(TokenKind::Ident(endmacro_kw), span),
     /// ]));
     ///
     /// // Caso permissivo com sufixo extra
@@ -122,6 +125,14 @@ impl Preprocessor<'_> {
             line,
             [Token { kind: TokenKind::Ident(sym), .. }, ..]
             if *sym == self.language_symbols.preprocessor.endmacro
+        ) || matches!(
+            line,
+            [
+                Token { kind: TokenKind::Ident(_), .. },
+                Token { kind: TokenKind::Colon, .. },
+                Token { kind: TokenKind::Ident(sym), .. },
+                ..
+            ] if *sym == self.language_symbols.preprocessor.endmacro
         )
     }
 }

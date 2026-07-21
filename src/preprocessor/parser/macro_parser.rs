@@ -72,39 +72,94 @@ impl Preprocessor<'_> {
 
     /// Faz o parsing completo da linha de encerramento de macro.
     ///
-    /// Forma canônica na linguagem:
+    /// Formas aceitas na linguagem:
     /// ```ignore
     /// ENDMACRO
+    /// <Label>: ENDMACRO
     /// ```
     ///
     /// Fluxo interno:
-    /// 1. exige keyword `ENDMACRO` com `consume_keyword`;
-    /// 2. garante ausência de sufixo com `ensure_no_trailing_tokens`.
+    /// 1. separa o prefixo opcional `<Label>:` quando a linha usa um
+    ///    encerramento rotulado;
+    /// 2. exige keyword `ENDMACRO` com `consume_keyword`;
+    /// 3. garante ausência de sufixo com `ensure_no_trailing_tokens`;
+    /// 4. devolve a label opcional como linha de body para que ela seja emitida
+    ///    no código preprocessado.
     ///
     /// Retorno:
-    /// - `Ok(())` quando a linha é exatamente `ENDMACRO`.
+    /// - `Ok(None)` quando a linha é exatamente `ENDMACRO`;
+    /// - `Ok(Some(MacroBodyLine))` quando a linha é `<Label>: ENDMACRO`, com a
+    ///   label preservada como linha montável.
     ///
     /// Erros:
     /// - propaga falhas de `consume_keyword` (token ausente/inesperado no
-    ///   prefixo);
+    ///   prefixo após a label opcional);
     /// - propaga `TrailingTokens` quando há tokens após `ENDMACRO`.
     ///
     /// Efeito colateral:
-    /// - nenhum. A função apenas valida sintaxe.
+    /// - aloca `NodeId` para a label preservada quando existe prefixo rotulado.
     pub(in crate::preprocessor) fn parse_endmacro_line(
-        &self,
+        &mut self,
         line: &[Token],
-    ) -> Result<(), PreprocessorError> {
+        terminator: Token,
+    ) -> Result<Option<MacroBodyLine>, PreprocessorError> {
+        let (endmacro_line, fallback_span, label_line) = self.split_optional_endmacro_label(line);
         let (tail, _) = self.consume_keyword(
-            line,
+            endmacro_line,
             DirectiveKind::EndMacro,
             self.language_symbols.preprocessor.endmacro,
-            Span::default(),
+            fallback_span,
         )?;
 
         self.ensure_no_trailing_tokens(tail, DirectiveKind::EndMacro)?;
 
-        Ok(())
+        label_line
+            .map(|line| self.parse_macro_body_line(line, terminator))
+            .transpose()
+    }
+
+    /// Separa o prefixo opcional de label em um encerramento de macro.
+    ///
+    /// Forma esperada (prefixo opcional):
+    /// ```ignore
+    /// <Label>: ENDMACRO
+    /// ```
+    ///
+    /// Contrato:
+    /// - se a linha começa com `<Ident> : ENDMACRO`, retorna:
+    ///   - a fatia iniciada na keyword `ENDMACRO`;
+    ///   - o `Span` do `:`, usado como fallback de diagnóstico;
+    ///   - a fatia `<Ident> :`, que deve ser preservada como body da macro;
+    /// - caso contrário, devolve a linha original sem label preservada.
+    ///
+    /// Esta função é deliberadamente permissiva: ela só reconhece a forma
+    /// rotulada quando há evidência suficiente de que a próxima etapa deve
+    /// consumir `ENDMACRO`. A validação estrita da keyword e dos tokens
+    /// remanescentes continua em [`Self::parse_endmacro_line`].
+    fn split_optional_endmacro_label<'a>(
+        &self,
+        line: &'a [Token],
+    ) -> (&'a [Token], Span, Option<&'a [Token]>) {
+        match line {
+            [
+                Token {
+                    kind: TokenKind::Ident(_),
+                    ..
+                },
+                Token {
+                    kind: TokenKind::Colon,
+                    span: colon_span,
+                },
+                Token {
+                    kind: TokenKind::Ident(sym),
+                    ..
+                },
+                ..,
+            ] if *sym == self.language_symbols.preprocessor.endmacro => {
+                (&line[2..], *colon_span, Some(&line[..2]))
+            }
+            _ => (line, Span::default(), None),
+        }
     }
 
     /// Lê e valida o rótulo inicial do cabeçalho de macro.

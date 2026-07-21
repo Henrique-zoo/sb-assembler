@@ -32,7 +32,8 @@ impl Preprocessor<'_> {
     ///
     /// Fluxo:
     /// 1. consome linhas do iterador;
-    /// 2. quando encontra candidata a `ENDMACRO`, valida a linha e encerra;
+    /// 2. quando encontra candidata a `ENDMACRO`, valida a linha, preserva uma
+    ///    label opcional como última linha do body e encerra;
     /// 3. se encontra outro cabeçalho `MACRO` antes de `ENDMACRO`, sinaliza
     ///    que a macro atual ficou sem encerramento e deixa a nova definição
     ///    para o orquestrador processar;
@@ -62,7 +63,11 @@ impl Preprocessor<'_> {
                 let logical_line = lines
                     .next()
                     .expect("linha observada por peek deve existir em next");
-                self.parse_endmacro_line(&logical_line.content)?;
+                if let Some(label_line) =
+                    self.parse_endmacro_line(&logical_line.content, logical_line.terminator)?
+                {
+                    body.push(label_line);
+                }
                 return Ok(body);
             }
 
