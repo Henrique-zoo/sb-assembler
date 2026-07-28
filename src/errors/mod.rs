@@ -1,26 +1,7 @@
-//! Tipos de erro compartilhados entre os estágios do assembler.
-//!
-//! Este módulo centraliza os diagnósticos emitidos pelos componentes internos,
-//! mantendo uma API única para:
-//! - léxico;
-//! - pré-processamento;
-//! - montagem.
-//!
-//! Objetivos principais:
-//! - padronizar o formato dos erros;
-//! - preservar `Span` para mensagens precisas;
-//! - facilitar evolução do pipeline sem espalhar definições de erro.
+//! Fachada pública para os tipos de erro da crate.
 
-mod assembly;
-mod lexer;
-mod preprocessor;
-mod simulation;
+//! Cada módulo mantém seus erros junto da implementação que os produz. Este
+//! módulo existe apenas como ponto de importação conveniente para consumidores
+//! externos.
 
-/// Reexports de erros de montagem.
-pub(crate) use assembly::*;
-/// Reexports de erros léxicos.
-pub(crate) use lexer::*;
-/// Reexports de erros do pré-processador.
-pub(crate) use preprocessor::*;
-/// Reexports de erros de simulação.
-pub use simulation::*;
+pub use crate::{assembler::AssemblerError, simulator::SimulationError};

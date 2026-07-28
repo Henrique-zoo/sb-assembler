@@ -5,11 +5,9 @@
 //! execução. A decodificação e o efeito das instruções ficam no módulo pai,
 //! porque fazem parte da orquestração do simulador.
 
-use crate::{
-    assembler::{SignedWord, Word},
-    assembly::one_pass::ObjectProgram,
-    errors::SimulationError,
-};
+use super::SimulationError;
+
+use crate::assembler::{SignedWord, Word, assembly::one_pass::ObjectProgram};
 
 /// Quantidade de palavras endereçáveis pela máquina simulada.
 const MEMORY_SIZE: usize = 65_536;
