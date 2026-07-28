@@ -1,53 +1,34 @@
 #![allow(dead_code, unused_imports, unused_variables)]
 
+mod assembler;
 mod common;
-
-mod assembler {
-    pub type SignedWord = i16;
-    pub type Word = u16;
-}
-#[path = "../src/assembly/mod.rs"]
-mod assembly;
-#[path = "../src/errors/mod.rs"]
-mod errors;
-#[path = "../src/interner/mod.rs"]
-mod interner;
-#[path = "../src/language/mod.rs"]
-mod language;
-#[path = "../src/lexer/mod.rs"]
-mod lexer;
-#[path = "../src/parser/ir.rs"]
-pub(crate) mod parser_ir;
-#[path = "../src/parser/types.rs"]
-pub(crate) mod parser_types;
-
-mod parser {
-    pub(crate) use crate::parser_ir as ir;
-    pub(crate) use crate::parser_types as types;
-}
 
 use std::fs;
 
-use assembler::Word;
-use assembly::one_pass::{ObjectProgram, OnePassAssembler};
+use assembler::{
+    Word,
+    assembly::one_pass::{ObjectProgram, OnePassAssembler},
+    interner::{Interner, Symbol},
+    language::{
+        instructions::{InstructionSet, Mnemonic},
+        numeric_literals::{NumberSign, NumericLiteral},
+    },
+    lexer::Span,
+    parser::{
+        ir::{
+            self, AddressOperand, DataDirective, Instruction, LabelDef, NumberLiteral, SymbolRef,
+        },
+        types::{DataLine, NodeSpans, ParsedLine, ParsedProgram, TextLine},
+    },
+};
 use common::{cleanup, temp_base_path};
-use interner::{Interner, Symbol};
-use language::{
-    instructions::{InstructionSet, Mnemonic},
-    numeric_literals::{NumberSign, NumericLiteral},
-};
-use lexer::Span;
-use parser::{
-    ir::{AddressOperand, DataDirective, Instruction, LabelDef, NumberLiteral, SymbolRef},
-    types::{DataLine, NodeSpans, ParsedLine, ParsedProgram, TextLine},
-};
 use sb_assembler::{errors::SimulationError, simulator::simulate_obj_file};
 
 fn span() -> Span {
     Span::default()
 }
 
-fn node(spans: &mut NodeSpans) -> parser::ir::NodeId {
+fn node(spans: &mut NodeSpans) -> ir::NodeId {
     spans.alloc(span())
 }
 

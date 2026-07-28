@@ -232,13 +232,15 @@ os bits resultantes permanecem no registrador.
 
 Principais módulos:
 
-- `lexer`: transforma texto em tokens e preserva spans para diagnósticos.
-- `preprocessor`: processa seções, macros, `EQU` e `IF`.
-- `parser`: valida a linguagem montável depois do pré-processamento.
-- `assembly`: emite `.obj` e `.pen` com montagem em uma passagem.
 - `assembler`: fachada de alto nível do pipeline de montagem.
+- `assembler::lexer`: transforma texto em tokens e preserva spans para
+  diagnósticos.
+- `assembler::preprocessor`: processa seções, macros, `EQU` e `IF`.
+- `assembler::parser`: valida a linguagem montável depois do
+  pré-processamento.
+- `assembler::assembly`: emite `.obj` e `.pen` com montagem em uma passagem.
 - `simulator`: carrega e executa programas objeto.
-- `errors`: tipos de erro e famílias de diagnósticos.
+- `errors`: fachada pública para os tipos de erro expostos pela crate.
 
 O binário em `src/main.rs` apenas escolhe o modo pela extensão do arquivo e
 chama o módulo apropriado.

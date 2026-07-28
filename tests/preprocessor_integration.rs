@@ -1,24 +1,13 @@
 #![allow(dead_code, unused_imports)]
 
-mod assembler {
-    pub type SignedWord = i16;
-    pub type Word = u16;
-}
-#[path = "../src/errors/mod.rs"]
-mod errors;
-#[path = "../src/interner/mod.rs"]
-mod interner;
-#[path = "../src/language/mod.rs"]
-mod language;
-#[path = "../src/lexer/mod.rs"]
-mod lexer;
-#[path = "../src/preprocessor/mod.rs"]
-mod preprocessor;
+mod assembler;
 
-use interner::Interner;
-use language::LanguageSymbols;
-use lexer::{Lexer, Token, TokenKind};
-use preprocessor::{LogicalLine, PreprocessedProgram, Preprocessor};
+use assembler::{
+    interner::Interner,
+    language::LanguageSymbols,
+    lexer::{Token, TokenKind},
+    preprocessor::{LogicalLine, PreprocessedProgram, Preprocessor},
+};
 
 fn token_to_text(token: &Token, interner: &Interner) -> String {
     match token.kind {
@@ -145,11 +134,8 @@ CLEAR AUX
     let mut interner = Interner::new();
     let language_symbols = LanguageSymbols::new(&mut interner);
 
-    let tokens = {
-        let lexer = Lexer::new(source, &mut interner);
-        lexer.collect::<Result<Vec<_>, _>>()
-    }
-    .expect("lexer falhou no cenário de teste");
+    let tokens =
+        { assembler::lex(source, &mut interner) }.expect("lexer falhou no cenário de teste");
 
     let lexer_output = render_lexer_output(&tokens, &interner);
     println!("===== LEXER OUTPUT =====\n{lexer_output}");

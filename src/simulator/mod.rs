@@ -71,17 +71,17 @@
 //! inválido, divisão por zero, arquivo desalinhado ou contador de programa fora
 //! da memória.
 
+mod errors;
 mod processor;
 
 use std::{fs, io, path::Path};
 
 use processor::Processor;
 
-use crate::{
-    assembler::{SignedWord, Word},
-    assembly::one_pass::ObjectProgram,
-    errors::SimulationError,
-    language::instructions::Opcode,
+pub use errors::SimulationError;
+
+use crate::assembler::{
+    SignedWord, Word, assembly::one_pass::ObjectProgram, language::instructions::Opcode,
 };
 
 /// Simula um arquivo `.obj`.

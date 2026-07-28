@@ -1,16 +1,58 @@
-//! Fachada de alto nível do assembler.
+//! Fachada de alto nível do pipeline de montagem.
 //!
-//! Este módulo define o ponto de entrada para processar um programa assembly,
-//! encapsulando o estado compartilhado entre estágios (como o `Interner`) e a
-//! coordenação do pipeline.
+//! Este módulo é a fronteira pública do montador. Ele mantém os estágios
+//! internos agrupados no namespace `assembler` e expõe apenas a API necessária
+//! para o binário e para testes de integração montarem programas sem conhecer a
+//! implementação de cada etapa.
 //!
-//! Estado atual:
-//! - a estrutura base do pipeline está pronta;
-//! - o método [`Assembler::process`] já inicializa o lexer e serve como
-//!   gancho para os próximos estágios (pré-processamento, parser e emissão).
+//! ## Papel no pipeline
+//!
+//! O assembler transforma fonte assembly em artefatos intermediários e finais
+//! por meio de dois fluxos principais:
+//! 1. `.asm` para `.pre`, executando léxico e pré-processamento;
+//! 2. `.pre` para `.obj` e `.pen`, executando léxico, leitura das seções
+//!    preprocessadas, parser e montagem em uma passagem.
+//!
+//! A fachada também mantém [`Word`] e [`SignedWord`], os tipos centrais da
+//! máquina alvo. Esses aliases são usados tanto pela montagem quanto pelo
+//! simulador para preservar o contrato de uma arquitetura didática de 16 bits.
+//!
+//! ## Estado compartilhado
+//!
+//! Cada [`Assembler`] guarda o fonte original, um `Interner` e o vocabulário
+//! internado da linguagem. O mesmo interner atravessa lexer, pré-processador,
+//! parser e montagem para que lexemas repetidos possam ser comparados por
+//! símbolos compactos em vez de strings.
+//!
+//! ## Responsabilidade dos submódulos
+//!
+//! - `lexer`: transforma texto em tokens com spans de diagnóstico;
+//! - `preprocessor`: aplica `SECTION`, `MACRO`, `EQU` e `IF`;
+//! - `parser`: valida o programa preprocessado e constrói a IR montável;
+//! - `assembly`: emite `.obj` resolvido e `.pen` com listas de pendência;
+//! - `language`: define vocabulário, mnemônicos, opcodes e literais;
+//! - `interner`: deduplica lexemas em símbolos compactos;
+//! - `file_creator`: grava os artefatos produzidos pelo pipeline;
+//! - `errors`: concentra os diagnósticos internos do montador.
+//!
+//! ## Política de erros
+//!
+//! Os estágios internos emitem erros próprios, mas a API deste módulo os
+//! normaliza em [`AssemblerError`]. Cada diagnóstico carrega o estágio em
+//! [`AssemblerStage`], mensagem textual e, quando disponível, posição de fonte
+//! para renderizar snippets com linha, coluna e marcador visual.
+pub(crate) mod assembly;
+pub(crate) mod errors;
+pub(crate) mod file_creator;
+pub(crate) mod interner;
+pub(crate) mod language;
+pub(crate) mod lexer;
+pub(crate) mod parser;
+pub(crate) mod preprocessor;
+
 use std::{error::Error, fmt};
 
-use crate::{
+use self::{
     assembly::one_pass::OnePassAssembler,
     errors::{
         AssemblyError, AssemblyErrorKind, DirectiveKind, DirectiveSyntaxErrorKind,
@@ -254,6 +296,18 @@ enum PipelineError {
 
 impl<'a> Assembler<'a> {
     /// Cria uma instância de assembler para um fonte específico.
+    ///
+    /// A construção inicializa o `Interner` e interna o vocabulário fixo da
+    /// linguagem antes que qualquer estágio do pipeline seja executado.
+    ///
+    /// # Parâmetros
+    /// - `source`: conteúdo textual do arquivo de entrada. Para `.asm`, esse
+    ///   texto ainda passará pelo pré-processador; para `.pre`, ele será lido
+    ///   como programa já preprocessado.
+    ///
+    /// # Retorno
+    /// - [`Assembler`] pronto para executar uma das operações públicas da
+    ///   fachada.
     pub fn new(source: &'a str) -> Self {
         let mut interner = Interner::new();
         let language_symbols = LanguageSymbols::new(&mut interner);
@@ -267,7 +321,20 @@ impl<'a> Assembler<'a> {
 
     /// Executa léxico e pré-processamento.
     ///
-    /// Retorna erro quando algum diagnóstico é emitido.
+    /// Este método é útil como validação leve de um fonte `.asm`: ele percorre
+    /// o fluxo até materializar um `PreprocessedProgram`, mas descarta o
+    /// resultado em vez de gravar arquivo.
+    ///
+    /// # Retorno
+    /// - `Ok(())` quando o lexer e o pré-processador terminam sem
+    ///   diagnósticos;
+    /// - `Err(AssemblerError)` quando algum estágio falha.
+    ///
+    /// # Erros
+    /// Retorna erro de assembler quando há caractere ou número inválido no
+    /// lexer, ou quando o pré-processador encontra diretivas malformadas,
+    /// macros inválidas, aliases `EQU` indefinidos ou condições `IF`
+    /// problemáticas.
     pub fn process(mut self) -> Result<(), AssemblerError> {
         match self.run_preprocessor() {
             Ok(_) => Ok(()),
@@ -279,6 +346,22 @@ impl<'a> Assembler<'a> {
     ///
     /// O método interrompe o pipeline no primeiro estágio com erro e não grava
     /// artefatos parciais.
+    ///
+    /// # Parâmetros
+    /// - `file_name`: caminho base dos arquivos de saída, sem extensão. O
+    ///   método grava `{file_name}.obj` e `{file_name}.pen`.
+    ///
+    /// # Retorno
+    /// - `Ok(())` quando o fonte `.pre` é lido, parseado, montado e os dois
+    ///   artefatos são gravados;
+    /// - `Err(AssemblerError)` quando lexer, leitura de seções preprocessadas,
+    ///   parser ou montagem em uma passagem emitem diagnósticos.
+    ///
+    /// # Erros
+    /// Retorna erro quando o `.pre` contém tokens inválidos, linhas fora de
+    /// `SECTION TEXT`/`SECTION DATA`, instruções ou diretivas inválidas,
+    /// símbolos duplicados ou indefinidos, literais fora do intervalo da
+    /// máquina ou endereços que não cabem em [`Word`].
     pub fn generate_obj_and_pen_files(mut self, file_name: &str) -> Result<(), AssemblerError> {
         let preprocessed_tokens = match self.read_preprocessed_program() {
             Ok(preprocessed_tokens) => preprocessed_tokens,
@@ -317,6 +400,20 @@ impl<'a> Assembler<'a> {
     ///
     /// O arquivo só é escrito quando o léxico e o pré-processamento terminam
     /// sem diagnósticos.
+    ///
+    /// # Parâmetros
+    /// - `file_name`: caminho base do arquivo de saída, sem extensão. O método
+    ///   grava `{file_name}.pre`.
+    ///
+    /// # Retorno
+    /// - `Ok(())` quando o fonte `.asm` é preprocessado e o `.pre` é gravado;
+    /// - `Err(AssemblerError)` quando lexer ou pré-processador emitem
+    ///   diagnósticos.
+    ///
+    /// # Erros
+    /// Retorna erro quando o fonte contém caractere ou número inválido, linha
+    /// fora de seção sem diretiva reconhecida, macro malformada, `ENDMACRO`
+    /// inesperado, alias `EQU` inválido ou `IF` sem linha controlada.
     pub fn generate_preprocessed_file(mut self, file_name: &str) -> Result<(), AssemblerError> {
         let preprocessed_tokens = match self.run_preprocessor() {
             Ok(preprocessed_tokens) => preprocessed_tokens,
